@@ -1,4 +1,5 @@
-use crate::ast::{CompUnit, FuncDef, FuncType, Block, Stmt, Number};
+use crate::ast::*;
+use std::rc::Rc;
 // lalrpop 里的约定
 grammar;
 
@@ -11,21 +12,94 @@ match {
   _
 }
 
-pub CompUnit: CompUnit = <func_def: FuncDef> => CompUnit { <> };
+pub CompUnit: CompUnit = <func_def: FuncDef> => CompUnit {
+    func_def: Rc::new(func_def),
+ };
 
 FuncDef: FuncDef = {
-  <func_type: FuncType> <ident: Ident> "(" ")" <block: Block> => {
-    FuncDef { <> }
-  }
+  <func_type: FuncType> <ident: Ident> "(" ")" <block: Block> => FuncDef {
+    func_type,
+    ident,
+    block: Rc::new(block),
+  },
 }
 
 FuncType: FuncType = "int" => FuncType::Int;
 
-Block: Block = "{" <stmt: Stmt> "}" => Block { <> };
+Block: Block = "{" <stmt: Stmt> "}" => Block { stmt: Rc::new(stmt) };
 
-Stmt: Stmt = "return" <num: Number> ";" => Stmt { <> };
+//Exp         ::= LOrExp;
+//MulExp      ::= UnaryExp | MulExp ("*" | "/" | "%") UnaryExp;
+//AddExp      ::= MulExp | AddExp ("+" | "-") MulExp;
+//RelExp      ::= AddExp | RelExp ("<" | ">" | "<=" | ">=") AddExp;
+//EqExp       ::= RelExp | EqExp ("==" | "!=") RelExp;
+//LAndExp     ::= EqExp | LAndExp "&&" EqExp;
+//LOrExp      ::= LAndExp | LOrExp "||" LAndExp;
+Stmt: Stmt = "return" <exp: Exp> ";" => Stmt { exp: Rc::new(exp) };
 
-Number: i32 = <num: IntConst> => <>;
+Exp: Exp = {
+  <l_or_exp: LOrExp> => Exp { l_or_exp: Rc::new(l_or_exp) },
+};
+LOrExp: LOrExp = {
+    <l_and_exp: LAndExp> => LOrExp::LAndExp( Rc::new(l_and_exp) ),
+    <l_or_exp: LOrExp> "||" <l_and_exp: LAndExp> => LOrExp::Or( Rc::new(l_or_exp), Rc::new(l_and_exp) )
+};
+LAndExp: LAndExp = {
+    <eq_exp: EqExp> => LAndExp::EqExp( Rc::new(eq_exp) ),
+    <l_and_exp: LAndExp> "&&" <eq_exp: EqExp> => LAndExp::And( Rc::new(l_and_exp), Rc::new(eq_exp) )
+};
+EqExp: EqExp = {
+    <rel_exp: RelExp> => EqExp::RelExp( Rc::new(rel_exp) ),
+    <eq_exp: EqExp> <eq_op: EqOp> <rel_exp: RelExp> => EqExp::Eq(Rc::new(eq_exp), eq_op, Rc::new(rel_exp))
+};
+EqOp: EqOp = {
+    "==" => EqOp::Eq,
+    "!=" => EqOp::Neq
+};
+RelExp: RelExp = {
+    <add_exp: AddExp> => RelExp::AddExp (Rc::new(add_exp)),
+    <rel_exp: RelExp> <rel_op: RelOp> <add_exp: AddExp> => RelExp::Rel(Rc::new(rel_exp), rel_op, Rc::new(add_exp))
+};
+RelOp: RelOp = {
+    "<" => RelOp::Lt,
+    ">" => RelOp::Gt,
+    "<=" => RelOp::Le,
+    ">=" => RelOp::Ge
+};
+AddExp: AddExp = {
+    <mul_exp: MulExp> => AddExp::MulExp (Rc::new(mul_exp)),
+    <add_exp: AddExp> <add_op: AddOp> <mul_exp: MulExp> => AddExp::Add (Rc::new(add_exp), add_op, Rc::new(mul_exp))
+};
+AddOp: AddOp = {
+    "+" => AddOp::Plus,
+    "-" => AddOp::Minus
+}
+
+MulExp: MulExp = {
+    <unary_exp: UnaryExp> => MulExp::UnaryExp (Rc::new(unary_exp)),
+    <mul_exp: MulExp> <mul_op: MulOp> <unary_exp: UnaryExp> => MulExp::Mul(Rc::new(mul_exp), mul_op, Rc::new(unary_exp))
+};
+MulOp: MulOp = {
+    "*" => MulOp::Mul,
+    "/" => MulOp::Div,
+    "%" => MulOp::Mod
+};
+UnaryExp: UnaryExp = {
+    <primary_exp: PrimaryExp> => UnaryExp::PrimaryExp(Rc::new(primary_exp)),
+    <unary_op: UnaryOp> <unary_exp: UnaryExp> => UnaryExp::UnaryOp(unary_op, Rc::new(unary_exp))
+};
+PrimaryExp: PrimaryExp = {
+    "(" <exp: Exp> ")" => PrimaryExp::Parens(Rc::new(exp)),
+    <number: Number> => PrimaryExp::Number(number),
+};
+
+UnaryOp: UnaryOp = {
+    "+" => UnaryOp::Plus,
+    "-" => UnaryOp::Minus,
+    "!" => UnaryOp::Not
+};
+
+Number: i32 = <num: IntConst> => num;
 
 // 如果匹配到标识符, 就返回这个字符串
 // 一对尖括号在此处指代的是正则表达式匹配到的字符串 (&str)
