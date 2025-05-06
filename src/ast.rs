@@ -6,11 +6,6 @@ use koopa::ir::builder_traits::*;
 pub struct CompUnit {
     pub func_def: Rc<FuncDef>,
 }
-impl CompUnit {
-    pub fn generate_ir(&self, program: &mut Program) {
-        self.func_def.generate_ir(program);
-    }
-}
 
 #[derive(Debug)]
 pub struct FuncDef {
@@ -18,21 +13,6 @@ pub struct FuncDef {
     pub ident: String,
     pub block: Rc<Block>,
 }
-impl FuncDef {
-    pub fn generate_ir(&self, program: &mut Program) {
-        let func = program.new_func(FunctionData::new(
-            self.ident.clone(),
-            Vec::new(),
-            match self.func_type {
-                FuncType::Void => Type::get_unit(),
-                FuncType::Int => Type::get_i32()
-            },
-        ));
-        let func = program.func_mut(func);
-
-    }
-}
-
 #[derive(Debug)]
 pub enum FuncType {
     Void,
@@ -41,25 +21,24 @@ pub enum FuncType {
 
 #[derive(Debug)]
 pub struct Block {
-    pub stmt: Rc<Stmt>,
+    pub items: Rc<Vec<BlockItem>>,
 }
-
-impl Block {
-    pub fn generate_ir(&self, program: &mut Program) {
-        // self.stmt.generate_ir(program);
-    }
+#[derive(Debug)]
+pub enum BlockItem {
+    Stmt(Rc<Stmt>),
+    Decl(Rc<Decl>),
 }
 
 #[derive(Debug)]
-pub struct Stmt {
-    pub exp : Rc<Exp>,
+pub enum Stmt {
+    Return(Rc<Exp>),
+    Assign(LVal, Rc<Exp>),
 }
 
 #[derive(Debug)]
 pub struct Exp {
     pub l_or_exp: Rc<LOrExp>,
 }
-
 #[derive(Debug)]
 pub enum LOrExp {
     LAndExp(Rc<LAndExp>),
@@ -125,12 +104,56 @@ pub enum UnaryExp {
 pub enum PrimaryExp {
     Parens(Rc<Exp>),
     Number(Number),
+    LVal(LVal),
 }
+#[derive(Debug)]
+pub struct LVal {
+    pub ident: String,
+}
+
 #[derive(Debug)]
 pub enum UnaryOp {
     Plus,
     Minus,
     Not,
 }
+#[derive(Debug)]
+pub enum Decl {
+    ConstDecl(Rc<ConstDecl>),
+    VarDecl(Rc<VarDecl>),
+}
+#[derive(Debug)]
+pub struct ConstDecl {
+    pub btype: BType,
+    pub const_defs: Rc<Vec<ConstDef>>,
+}
+#[derive(Debug)]
+pub struct ConstDef {
+    pub ident: String,
+    pub const_init_val: Rc<ConstInitVal>,
+}
+#[derive(Debug)]
+pub enum ConstInitVal {
+    ConstExp(Rc<Exp>)
+}
 
+
+#[derive(Debug)]
+pub struct VarDecl {
+    pub btype: BType,
+    pub var_defs: Rc<Vec<VarDef>>,
+}
+#[derive(Debug)]
+pub enum VarDef {
+    Def(String),
+    Init(String, Rc<InitVal>),
+}
+#[derive(Debug)]
+pub enum InitVal {
+    Exp(Rc<Exp>),
+}
+#[derive(Debug)]
+pub enum BType {
+    Int,
+}
 pub type Number = i32;

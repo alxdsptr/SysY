@@ -1,5 +1,6 @@
 use crate::ast::*;
 use std::rc::Rc;
+
 // lalrpop 里的约定
 grammar;
 
@@ -23,19 +24,67 @@ FuncDef: FuncDef = {
     block: Rc::new(block),
   },
 }
-
 FuncType: FuncType = "int" => FuncType::Int;
 
-Block: Block = "{" <stmt: Stmt> "}" => Block { stmt: Rc::new(stmt) };
+Block: Block = "{" <block_item: (BlockItem)* > "}" => Block { items: Rc::new(block_item) };
+BlockItem: BlockItem = {
+  <decl: Decl> => BlockItem::Decl(Rc::new(decl)),
+  <stmt: Stmt> => BlockItem::Stmt(Rc::new(stmt))
+};
+Decl: Decl = {
+  <const_decl: ConstDecl> => Decl::ConstDecl(Rc::new(const_decl)),
+  <var_decl: VarDecl> => Decl::VarDecl(Rc::new(var_decl))
+};
+ConstDecl: ConstDecl = {
+  "const" <btype: BType> <const_def: ConstDef> <defs: ("," <ConstDef>)*> ";" => {
+    let mut const_defs = vec![const_def];
+    const_defs.extend(defs);
+    ConstDecl {
+      btype,
+      const_defs: Rc::new(const_defs),
+    }
+  }
+};
+ConstDef: ConstDef = {
+  <ident: Ident> "=" <const_init_val: ConstInitVal> => ConstDef {
+    ident,
+    const_init_val: Rc::new(const_init_val),
+  }
+};
 
-//Exp         ::= LOrExp;
-//MulExp      ::= UnaryExp | MulExp ("*" | "/" | "%") UnaryExp;
-//AddExp      ::= MulExp | AddExp ("+" | "-") MulExp;
-//RelExp      ::= AddExp | RelExp ("<" | ">" | "<=" | ">=") AddExp;
-//EqExp       ::= RelExp | EqExp ("==" | "!=") RelExp;
-//LAndExp     ::= EqExp | LAndExp "&&" EqExp;
-//LOrExp      ::= LAndExp | LOrExp "||" LAndExp;
-Stmt: Stmt = "return" <exp: Exp> ";" => Stmt { exp: Rc::new(exp) };
+VarDecl: VarDecl = {
+  <btype: BType> <var_def: VarDef> <defs: ("," <VarDef>)*> ";" => {
+    let mut var_defs = vec![var_def];
+    var_defs.extend(defs);
+    VarDecl {
+      btype,
+      var_defs: Rc::new(var_defs),
+    }
+  }
+};
+
+VarDef: VarDef = {
+  <ident: Ident> => VarDef::Def(ident),
+  <ident: Ident> "=" <init_val: InitVal> => VarDef::Init(ident, Rc::new(init_val)),
+};
+InitVal: InitVal = {
+  <exp: Exp> => InitVal::Exp(Rc::new(exp)),
+};
+
+ConstInitVal: ConstInitVal = {
+  <const_exp: Exp> => ConstInitVal::ConstExp(Rc::new(const_exp)),
+};
+
+BType: BType = "int" => BType::Int;
+
+
+Stmt: Stmt = {
+    "return" <exp: Exp> ";" => Stmt::Return(Rc::new(exp)),
+    <lval: LVal> "=" <exp: Exp> ";" => Stmt::Assign(lval, Rc::new(exp)),
+};
+LVal: LVal = {
+    <ident: Ident> => LVal{ ident },
+};
 
 Exp: Exp = {
   <l_or_exp: LOrExp> => Exp { l_or_exp: Rc::new(l_or_exp) },
@@ -86,11 +135,12 @@ MulOp: MulOp = {
 };
 UnaryExp: UnaryExp = {
     <primary_exp: PrimaryExp> => UnaryExp::PrimaryExp(Rc::new(primary_exp)),
-    <unary_op: UnaryOp> <unary_exp: UnaryExp> => UnaryExp::UnaryOp(unary_op, Rc::new(unary_exp))
+    <unary_op: UnaryOp> <unary_exp: UnaryExp> => UnaryExp::UnaryOp(unary_op, Rc::new(unary_exp)),
 };
 PrimaryExp: PrimaryExp = {
     "(" <exp: Exp> ")" => PrimaryExp::Parens(Rc::new(exp)),
     <number: Number> => PrimaryExp::Number(number),
+    <lval: LVal> => PrimaryExp::LVal(lval),
 };
 
 UnaryOp: UnaryOp = {
