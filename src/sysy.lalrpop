@@ -77,11 +77,22 @@ ConstInitVal: ConstInitVal = {
 
 BType: BType = "int" => BType::Int;
 
-
 Stmt: Stmt = {
-    "return" <exp: Exp> ";" => Stmt::Return(Rc::new(exp)),
+    "return" <exp: Exp?> ";" => Stmt::Return(Rc::new(exp)),
     <lval: LVal> "=" <exp: Exp> ";" => Stmt::Assign(lval, Rc::new(exp)),
+    <exp: Exp?> ";" => Stmt::Exp(Rc::new(exp)),
+    <block: Block> => Stmt::Block(Rc::new(block)),
+    "if" "(" <exp: Exp> ")" <stmt: Stmt>  => Stmt::If(Rc::new(exp), Rc::new(stmt), Rc::new(None)),
+    "if" "(" <exp: Exp> ")" <stmt: withElse> "else" <else_: Stmt> => Stmt::If(Rc::new(exp), Rc::new(stmt), Rc::new(Some(else_))),
 };
+withElse: Stmt = {
+    "return" <exp: Exp?> ";" => Stmt::Return(Rc::new(exp)),
+    <lval: LVal> "=" <exp: Exp> ";" => Stmt::Assign(lval, Rc::new(exp)),
+    <exp: Exp?> ";" => Stmt::Exp(Rc::new(exp)),
+    <block: Block> => Stmt::Block(Rc::new(block)),
+    "if" "(" <exp: Exp> ")" <stmt: withElse> "else" <else_: withElse> => Stmt::If(Rc::new(exp), Rc::new(stmt), Rc::new(Some(else_))),
+};
+
 LVal: LVal = {
     <ident: Ident> => LVal{ ident },
 };
