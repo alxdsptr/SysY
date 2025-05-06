@@ -4,15 +4,27 @@ use koopa::ir::*;
 use koopa::ir::builder_traits::*;
 #[derive(Debug)]
 pub struct CompUnit {
+    pub comp_unit: Rc<Option<CompUnit>>,
     pub func_def: Rc<FuncDef>,
 }
 
 #[derive(Debug)]
 pub struct FuncDef {
     pub func_type: FuncType,
+    pub params: Rc<Option<FuncFParams>>,
     pub ident: String,
     pub block: Rc<Block>,
 }
+#[derive(Debug)]
+pub struct FuncFParams {
+    pub params: Rc<Vec<FuncFParam>>,
+}
+#[derive(Debug)]
+pub struct FuncFParam {
+    pub btype: BType,
+    pub ident: String,
+}
+
 #[derive(Debug)]
 pub enum FuncType {
     Void,
@@ -36,6 +48,9 @@ pub enum Stmt {
     Exp(Rc<Option<Exp>>),
     Block(Rc<Block>),
     If(Rc<Exp>, Rc<Stmt>, Rc<Option<Stmt>>),
+    While(Rc<Exp>, Rc<Stmt>),
+    Break,
+    Continue,
 }
 
 #[derive(Debug)]
@@ -102,7 +117,13 @@ pub enum MulOp {
 pub enum UnaryExp {
     PrimaryExp(Rc<PrimaryExp>),
     UnaryOp(UnaryOp, Rc<UnaryExp>),
+    Call(String, Rc<Option<FuncRParams>>),
 }
+#[derive(Debug)]
+pub struct FuncRParams {
+    pub params: Rc<Vec<Exp>>,
+}
+
 #[derive(Debug)]
 pub enum PrimaryExp {
     Parens(Rc<Exp>),

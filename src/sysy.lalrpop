@@ -12,18 +12,37 @@ match {
   // 剩下的情况采用默认方式处理
   _
 }
-
-pub CompUnit: CompUnit = <func_def: FuncDef> => CompUnit {
+//CompUnit    ::= [CompUnit] FuncDef;
+//
+//FuncDef     ::= FuncType IDENT "(" [FuncFParams] ")" Block;
+//FuncType    ::= "void" | "int";
+//FuncFParams ::= FuncFParam {"," FuncFParam};
+//FuncFParam  ::= BType IDENT;
+//
+pub CompUnit: CompUnit = <comp_unit: CompUnit?> <func_def: FuncDef> => CompUnit {
+    comp_unit: Rc::new(comp_unit),
     func_def: Rc::new(func_def),
  };
 
 FuncDef: FuncDef = {
-  <func_type: FuncType> <ident: Ident> "(" ")" <block: Block> => FuncDef {
+  <func_type: FuncType> <ident: Ident> "(" <func_params: FuncFParams?> ")" <block: Block> => FuncDef {
     func_type,
+    params: Rc::new(func_params),
     ident,
     block: Rc::new(block),
   },
 }
+FuncFParams: FuncFParams = {
+  <func_param: FuncFParam> <params: ("," <FuncFParam>)*> => {
+    let mut fparams = vec![func_param];
+    fparams.extend(params);
+    FuncFParams { params: Rc::new(fparams) }
+  }
+};
+FuncFParam: FuncFParam = {
+  <btype: BType> <ident: Ident> => FuncFParam { btype, ident }
+};
+
 FuncType: FuncType = "int" => FuncType::Int;
 
 Block: Block = "{" <block_item: (BlockItem)* > "}" => Block { items: Rc::new(block_item) };
@@ -84,6 +103,9 @@ Stmt: Stmt = {
     <block: Block> => Stmt::Block(Rc::new(block)),
     "if" "(" <exp: Exp> ")" <stmt: Stmt>  => Stmt::If(Rc::new(exp), Rc::new(stmt), Rc::new(None)),
     "if" "(" <exp: Exp> ")" <stmt: withElse> "else" <else_: Stmt> => Stmt::If(Rc::new(exp), Rc::new(stmt), Rc::new(Some(else_))),
+    "while" "(" <exp: Exp> ")" <stmt: Stmt> => Stmt::While(Rc::new(exp), Rc::new(stmt)),
+    "break" ";" => Stmt::Break,
+    "continue" ";" => Stmt::Continue,
 };
 withElse: Stmt = {
     "return" <exp: Exp?> ";" => Stmt::Return(Rc::new(exp)),
@@ -144,10 +166,25 @@ MulOp: MulOp = {
     "/" => MulOp::Div,
     "%" => MulOp::Mod
 };
+//UnaryExp    ::= ...
+//              | IDENT "(" [FuncRParams] ")"
+//              | ...;
+//FuncRParams ::= Exp {"," Exp};
+//
 UnaryExp: UnaryExp = {
     <primary_exp: PrimaryExp> => UnaryExp::PrimaryExp(Rc::new(primary_exp)),
     <unary_op: UnaryOp> <unary_exp: UnaryExp> => UnaryExp::UnaryOp(unary_op, Rc::new(unary_exp)),
+    <ident: Ident> "(" <func_rparams: FuncRParams?> ")" => UnaryExp::Call(ident, Rc::new(func_rparams)),
 };
+FuncRParams: FuncRParams = {
+    <exp: Exp> <rparams: ("," <Exp>)*> => {
+        let mut params = vec![exp];
+        params.extend(rparams);
+        FuncRParams { params: Rc::new(params) }
+    }
+};
+
+
 PrimaryExp: PrimaryExp = {
     "(" <exp: Exp> ")" => PrimaryExp::Parens(Rc::new(exp)),
     <number: Number> => PrimaryExp::Number(number),
