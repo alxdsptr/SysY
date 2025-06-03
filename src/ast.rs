@@ -1,16 +1,18 @@
-use std::cell::RefCell;
-use std::iter::Product;
 use std::rc::Rc;
 use koopa::ir;
 use koopa::ir::*;
-use koopa::ir::builder_traits::*;
-use crate::environment::Environment;
-use crate::sym_table::SymbolTable;
+use crate::environment::{Environment, FrontendError};
+use crate::sym_table::{SymbolEntry};
 
 #[derive(Debug)]
 pub struct CompUnit {
-    pub comp_unit: Rc<Option<CompUnit>>,
-    pub func_def: Rc<FuncDef>,
+    pub items: Rc<Vec<Comp>>,
+}
+
+#[derive(Debug)]
+pub enum Comp{
+    FuncDef(Rc<FuncDef>),
+    Decl(Rc<Decl>),
 }
 
 #[derive(Debug)]
@@ -37,13 +39,14 @@ pub struct FuncFParams {
     pub params: Rc<Vec<FuncFParam>>,
 }
 impl FuncFParams {
-    pub fn add_params(&self, env: &mut Environment) {
+    pub fn add_params(&self, env: &mut Environment) -> Result<(), FrontendError> {
         let func = env.program.func_mut(env.cur_func.unwrap());
         for i in 0..self.params.len() {
             let val = func.params()[i];
             let name = self.params[i].ident.clone();
-            env.sym_table.borrow_mut().insert_var(name, val);
+            env.sym_table.borrow_mut().insert_var(name, val)?;
         }
+        Ok(())
     }
 }
 #[derive(Debug)]
@@ -56,6 +59,13 @@ pub struct FuncFParam {
 pub enum FuncType {
     Void,
     Int,
+}
+impl FuncType {
+    pub fn from_btype(btype: BType) -> Self {
+        match btype {
+            BType::Int => FuncType::Int,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -88,7 +98,53 @@ pub enum Exp {
     BinaryExp(BinaryOp, Rc<Exp>, Rc<Exp>),
     Call(String, Rc<Option<Vec<Exp>>>),
 }
-#[derive(Debug)]
+impl Exp {
+    pub fn eval_const(&self, env: &mut Environment) -> Result<Number, FrontendError> {
+        match self {
+            Exp::Num(n) => Ok(*n),
+            Exp::LVal(lval) => {
+                if let Some(entry) = env.sym_table.borrow().get(&lval.ident) {
+                    if let SymbolEntry::Const(value) = entry {
+                        Ok(value)
+                    } else {
+                        Err(FrontendError::EvalNonConstExpr)
+                    }
+                } else {
+                    Err(FrontendError::UndefinedVariable(lval.ident.clone()))
+                }
+            },
+            Exp::UnaryExp(op, exp) => {
+                let value = exp.eval_const(env)?;
+                match op {
+                    UnaryOp::Pos => Ok(value),
+                    UnaryOp::Neg => Ok(-value),
+                    UnaryOp::Not => Ok(!value),
+                }
+            },
+            Exp::BinaryExp(op, left, right) => {
+                let left_value = left.eval_const(env)?;
+                let right_value = right.eval_const(env)?;
+                match op {
+                    BinaryOp::Add => Ok(left_value + right_value),
+                    BinaryOp::Sub => Ok(left_value - right_value),
+                    BinaryOp::Mul => Ok(left_value * right_value),
+                    BinaryOp::Div => if right_value == 0 { Err(FrontendError::DivisionByZero) } else { Ok(left_value / right_value) },
+                    BinaryOp::Mod => if right_value == 0 { Err(FrontendError::DivisionByZero) } else { Ok(left_value % right_value) },
+                    BinaryOp::Eq => Ok((left_value == right_value) as i32),
+                    BinaryOp::Neq => Ok((left_value != right_value) as i32),
+                    BinaryOp::Gt => Ok((left_value > right_value) as i32),
+                    BinaryOp::Ge => Ok((left_value >= right_value) as i32),
+                    BinaryOp::Lt => Ok((left_value < right_value) as i32),
+                    BinaryOp::Le => Ok((left_value <= right_value) as i32),
+                    BinaryOp::Land => Ok((left_value != 0 && right_value != 0) as i32),
+                    BinaryOp::Lor => Ok((left_value != 0 || right_value != 0) as i32),
+                }
+            },
+            Exp::Call(_, _) => Err(FrontendError::EvalNonConstExpr), // Function calls cannot be evaluated at compile time
+        }
+    }
+}
+    #[derive(Debug)]
 pub enum UnaryOp {
     Pos,
     Neg,
@@ -185,6 +241,12 @@ impl BType {
             BType::Int => {
                 Type::get_i32()
             }
+        }
+    }
+    pub fn from_func_type(func_type: FuncType) -> BType {
+        match func_type {
+            FuncType::Int => BType::Int,
+            FuncType::Void => panic!("Cannot convert void function type to BType"),
         }
     }
 }

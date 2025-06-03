@@ -9,20 +9,30 @@ match {
   // 跳过空白符和注释
   r"\s*" => {},
   r"//[^\n\r]*[\n\r]*" => {},
+  r"/\*[^*]*\*+([^/*][^*]*\*+)*/" => {}, // skip multi-line comment,
   // 剩下的情况采用默认方式处理
   _
 }
-//CompUnit    ::= [CompUnit] FuncDef;
+// CompUnit ::= [CompUnit] (Decl | FuncDef);
+
+
 //
 //FuncDef     ::= FuncType IDENT "(" [FuncFParams] ")" Block;
 //FuncType    ::= "void" | "int";
 //FuncFParams ::= FuncFParam {"," FuncFParam};
 //FuncFParam  ::= BType IDENT;
 //
-pub CompUnit: CompUnit = <comp_unit: CompUnit?> <func_def: FuncDef> => CompUnit {
-    comp_unit: Rc::new(comp_unit),
-    func_def: Rc::new(func_def),
- };
+//pub CompUnit: CompUnit = <items: (DeclOrFunc)*> => CompUnit {
+//  items: Rc::new(items),
+//};
+pub CompUnit: CompUnit = {
+    <items: (DeclOrFunc)+> => CompUnit { items: Rc::new(items) }
+};
+
+DeclOrFunc: Comp = {
+  <decl: Decl> => Comp::Decl(Rc::new(decl)),
+  <func_def: FuncDef> => Comp::FuncDef(Rc::new(func_def)),
+};
 
 FuncDef: FuncDef = {
   <func_type: FuncType> <ident: Ident> "(" <func_params: FuncFParams?> ")" <block: Block> => FuncDef {
@@ -43,7 +53,10 @@ FuncFParam: FuncFParam = {
   <btype: BType> <ident: Ident> => FuncFParam { btype, ident }
 };
 
-FuncType: FuncType = "int" => FuncType::Int;
+FuncType: FuncType = {
+    "void" => FuncType::Void,
+    <btype: BType> => FuncType::from_btype(btype),
+};
 
 Block: Block = "{" <block_item: (BlockItem)* > "}" => Block { items: Rc::new(block_item) };
 BlockItem: BlockItem = {
@@ -72,11 +85,11 @@ ConstDef: ConstDef = {
 };
 
 VarDecl: VarDecl = {
-  <btype: BType> <var_def: VarDef> <defs: ("," <VarDef>)*> ";" => {
+  <btype: FuncType> <var_def: VarDef> <defs: ("," <VarDef>)*> ";" => {
     let mut var_defs = vec![var_def];
     var_defs.extend(defs);
     VarDecl {
-      btype,
+      btype: BType::from_func_type(btype),
       var_defs: Rc::new(var_defs),
     }
   }
@@ -112,7 +125,7 @@ withElse: Stmt = {
     <lval: LVal> "=" <exp: Exp> ";" => Stmt::Assign(lval, Rc::new(exp)),
     <exp: Exp?> ";" => Stmt::Exp(Rc::new(exp)),
     <block: Block> => Stmt::Block(Rc::new(block)),
-    "if" "(" <exp: Exp> ")" <stmt: withElse> "else" <else_: withElse> => Stmt::If(Rc::new(exp), Rc::new(stmt), Rc::new(Some(else_))),
+    "if" "(" <exp: Exp> ")" <stmt: withElse> "else" <else_: withElse> => Stmt::If(Rc::new(exp), Rc::new(stmt), Some(Rc::new(else_))),
 };
 
 LVal: LVal = {

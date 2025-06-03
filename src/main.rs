@@ -7,7 +7,8 @@ mod environment;
 use lalrpop_util::lalrpop_mod;
 use std::env::args;
 use std::fs::read_to_string;
-use std::io::Result;
+use std::io::{Result, Write};
+use koopa::back::KoopaGenerator;
 use koopa::ir::Program;
 use crate::environment::{Environment, IRGen};
 
@@ -32,16 +33,20 @@ fn main() -> Result<()> {
 
     let mut program = Program::new();
     let mut env = Environment::new(&mut program);
-    // 生成 IR
+    let mut output_file = std::fs::File::create(output)?;
     match ast.generate_ir(&mut env){
-        Ok(_) => println!("IR generation successful!"),
+        Ok(_) => {
+            let mut gen = KoopaGenerator::new(Vec::new());
+            gen.generate_on(&program).unwrap();
+            let text_form_ir = std::str::from_utf8(&gen.writer()).unwrap().to_string();
+            println!("dump IR to file");
+            output_file.write_all(text_form_ir.as_bytes())?;
+        },
         Err(e) => {
             eprintln!("Error during IR generation: {:?}", e);
             return Err(std::io::Error::new(std::io::ErrorKind::Other, "IR generation failed"));
         }
     }
 
-    // 输出解析得到的 AST
-    println!("{:#?}", ast);
     Ok(())
 }

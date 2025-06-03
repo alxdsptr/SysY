@@ -1,23 +1,35 @@
-use std::cell::RefCell;
 use std::rc::Rc;
-use koopa::ir::{BasicBlock, Function, FunctionData, Program, Type, Value};
+use koopa::ir::{BasicBlock, FunctionData, Type, Value};
 use koopa::ir;
-use koopa::ir::builder::{BasicBlockBuilder, LocalInstBuilder, ValueBuilder};
+use koopa::ir::builder::{LocalInstBuilder, ValueBuilder};
+use crate::ast;
 use crate::ast::*;
 use crate::environment::*;
-use crate::sym_table::{SymbolEntry, SymbolTable};
+use crate::sym_table::{SymbolEntry};
 
 impl IRGen for CompUnit {
     type Output = ();
     fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
-        Ok(self.func_def.generate_ir(env)?)
+        for comp in self.items.iter() {
+            comp.generate_ir(env)?;
+        }
+        Ok(())
+    }
+}
+impl IRGen for Comp {
+    type Output = ();
+    fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
+        match self {
+            Comp::FuncDef(func_def) => func_def.generate_ir(env),
+            Comp::Decl(decl) => decl.generate_ir(env),
+        }
     }
 }
 impl IRGen for FuncDef {
     type Output = ();
     fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
         let func = env.program.new_func(FunctionData::with_param_names(
-            self.ident.clone(),
+            format!("@{}", self.ident),
             self.get_param(),
             match self.func_type {
                 FuncType::Void => Type::get_unit(),
@@ -27,11 +39,12 @@ impl IRGen for FuncDef {
         env.cur_func = Some(func);
         let old_table = env.enter_scope();
         if let Some(params) = &*self.params {
-            params.add_params(env);
+            params.add_params(env)?;
         }
         let entry= env.create_block("entry");
         env.cur_bb = Some(entry);
         env.exit_scope(old_table);
+        env.sym_table.borrow_mut().insert_func(self.ident.clone(), func)?;
         Ok(self.block.generate_ir(env)?)
     }
 }
@@ -55,19 +68,99 @@ impl IRGen for BlockItem {
         Ok(())
     }
 }
-impl IRGen for Stmt {
+impl IRGen for Decl {
     type Output = ();
     fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
-        let gen_single_block = |bb: BasicBlock, stmt: &Rc<Stmt>, target_bb: BasicBlock|->
-               Result<Self::Output, FrontendError> {
-            env.cur_bb = Some(bb);
-            let old_table = env.enter_scope();
-            stmt.generate_ir(env)?;
+        match self {
+            Decl::ConstDecl(const_decl) => const_decl.generate_ir(env)?,
+            Decl::VarDecl(var_decl) => var_decl.generate_ir(env)?,
+        }
+        Ok(())
+    }
+}
+impl IRGen for VarDecl {
+    type Output = ();
+    fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
+        for var_def in self.var_defs.iter() {
+            match var_def {
+                VarDef::Def(ident) => {
+                    let val = match env.is_global() {
+                        true => {
+                            let init = env.program.new_value().zero_init(self.btype.to_type());
+                            env.add_global_alloc(init, ident.clone())
+                        },
+                        false => {
+                            env.add_alloc(self.btype.to_type())
+                        },
+                    };
+                    env.sym_table.borrow_mut().insert_var(ident.clone(), val)?;
+                }
+                VarDef::Init(ident, exp) => {
+                    let val = match env.is_global() {
+                        true => {
+                            let init = match exp.as_ref() {
+                                InitVal::Exp(exp) => {
+                                    let value = exp.eval_const(env)?;
+                                    env.program.new_value().integer(value)
+                                },
+                            };
+                            env.add_global_alloc(init, ident.clone())
+                        },
+                        false => {
+                            let value = match exp.as_ref() {
+                                InitVal::Exp(exp) => {
+                                    exp.generate_ir(env)?
+                                }
+                            };
+                            let pos = env.add_alloc(self.btype.to_type());
+                            env.add_store(value, pos);
+                            pos
+                        },
+                    };
+                    env.sym_table.borrow_mut().insert_var(ident.clone(), val)?;
+                },
+            }
+        }
+        Ok(())
+    }
+}
 
-            env.add_jump(target_bb.clone());
-            env.exit_scope(old_table);
-            Ok(())
-        };
+impl IRGen for ConstDecl {
+    type Output = ();
+    fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
+        for const_def in self.const_defs.iter() {
+            let init_val = match const_def.const_init_val.as_ref() {
+                ConstInitVal::ConstExp(exp) => {
+                    exp.eval_const(env)?
+                }
+            };
+            // let pos = match env.is_global() {
+            //     true => {
+            //         let init_val = env.program.new_value().integer(init_val);
+            //         env.add_global_alloc(init_val, const_def.ident.clone())
+            //     },
+            //     false => {
+            //         let init_val = env.add_integer(init_val);
+            //         let pos = env.add_alloc(self.btype.to_type());
+            //         env.add_store(init_val, pos);
+            //         pos
+            //     }
+            // };
+            env.sym_table.borrow_mut().insert_const(const_def.ident.clone(), init_val)?;
+        }
+        Ok(())
+    }
+}
+impl Stmt {
+    fn gen_single_block(&self, env: &mut Environment, bb: BasicBlock, stmt: &Rc<Stmt>, target_bb: BasicBlock) -> Result<(), FrontendError> {
+        env.cur_bb = Some(bb);
+        let old_table = env.enter_scope();
+        stmt.generate_ir(env)?;
+        env.add_jump(target_bb.clone());
+        env.exit_scope(old_table);
+        Ok(())
+    }
+    fn generate_ir(&self, env: &mut Environment) -> Result<(), FrontendError> {
         match self {
             Stmt::Exp(exp) => {
                 if let Some(exp) = exp.as_ref() {
@@ -100,13 +193,13 @@ impl IRGen for Stmt {
 
                         env.add_branch(cond, then_bb, else_bb);
 
-                        gen_single_block(then_bb, then, end_bb)?;
-                        gen_single_block(else_bb, else_stmt, end_bb)?;
+                        self.gen_single_block(env, then_bb, then, end_bb)?;
+                        self.gen_single_block(env, else_bb, else_stmt, end_bb)?;
                     },
                     None => {
                         env.add_branch(cond, then_bb, end_bb.clone());
 
-                        gen_single_block(then_bb, then, end_bb)?;
+                        self.gen_single_block(env, then_bb, then, end_bb)?;
                     },
                 }
                 env.cur_bb = Some(end_bb);
@@ -127,7 +220,7 @@ impl IRGen for Stmt {
                 let cond = exp.generate_ir(env)?;
                 env.add_branch(cond, body_bb.clone(), end_bb.clone());
 
-                gen_single_block(body_bb, stmt, end_bb)?;
+                self.gen_single_block(env, body_bb, stmt, end_bb)?;
                 env.while_env = old_while_env;
 
                 env.cur_bb = Some(end_bb);
@@ -154,7 +247,8 @@ impl IRGen for Stmt {
             Stmt::Assign(lval, exp) => {
                 let value = exp.generate_ir(env)?;
                 let name = &lval.ident;
-                match env.sym_table.borrow().get(name) {
+                let entry =  env.sym_table.borrow().get(name);
+                match entry {
                     Some(entry) => {
                         match entry {
                             SymbolEntry::Var(var) => {
@@ -171,29 +265,13 @@ impl IRGen for Stmt {
     }
 }
 
-impl IRGen for Decl {
-    type Output = ();
-    fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
-        match self {
-            Decl::ConstDecl(const_decl) => const_decl.generate_ir(env)?,
-            Decl::VarDecl(var_decl) => var_decl.generate_ir(env)?,
-        }
-        Ok(())
-    }
-}
-impl IRGen for VarDecl {
-    type Output = ();
-    fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
-        Ok(())
-    }
-}
 impl IRGen for Exp {
     type Output = Value;
     fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
         match self {
             Exp::BinaryExp(op, lhs, rhs) => {
                 match op {
-                    BinaryOp::Lor => {
+                    ast::BinaryOp::Lor => {
                         let end_bb = env.create_block("lor_end");
                         let cond_bb = env.create_block("lor_cond");
 
@@ -214,7 +292,7 @@ impl IRGen for Exp {
                         env.add_load(result);
                         Ok(result)
                     },
-                    BinaryOp::Land => {
+                    ast::BinaryOp::Land => {
                         let end_bb = env.create_block("land_end");
                         let cond_bb = env.create_block("land_cond");
 
@@ -248,7 +326,8 @@ impl IRGen for Exp {
                 Ok(value)
             },
             Exp::LVal(lval) => {
-                match env.sym_table.borrow().get(&lval.ident) {
+                let entry = env.sym_table.borrow().get(&lval.ident);
+                match entry {
                     Some(SymbolEntry::Var(var)) => {
                         let load_inst = env.program.func_mut(env.cur_func.unwrap())
                             .dfg_mut()
@@ -290,7 +369,7 @@ impl IRGen for Exp {
                     .ok_or_else(|| FrontendError::UndefinedFunction(name.clone()))?;
 
                 let mut arg_values = Vec::new();
-                if let Some(args) = args {
+                if let Some(args) = args.as_ref() {
                     for arg in args.iter() {
                         let arg_value = arg.generate_ir(env)?;
                         arg_values.push(arg_value);

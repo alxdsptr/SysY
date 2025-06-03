@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use koopa::ir::{Function, Value};
 use crate::ast::Number;
+use crate::environment::FrontendError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SymbolEntry {
@@ -31,14 +32,29 @@ impl SymbolTable {
         }
     }
 
-    pub fn insert_var(&mut self, name: String, value: Value) {
+    pub fn insert_var(&mut self, name: String, value: Value) -> Result<(), FrontendError> {
+        if self.symbols.contains_key(&name) {
+            return Err(FrontendError::Redefinition(name));
+        }
         self.symbols.insert(name, SymbolEntry::Var(value));
+        Ok(())
     }
-    pub fn insert_const(&mut self, name: String, value: Number) {
+    pub fn insert_const(&mut self, name: String, value: Number) -> Result<(), FrontendError> {
+        if self.symbols.contains_key(&name) {
+            return Err(FrontendError::Redefinition(name));
+        }
         self.symbols.insert(name, SymbolEntry::Const(value));
+        Ok(())
     }
-    pub fn insert_func(&mut self, name: String, func: Function) {
+    pub fn insert_func(&mut self, name: String, func: Function) -> Result<(), FrontendError> {
+        if self.symbols.contains_key(&name) {
+            return Err(FrontendError::Redefinition(name));
+        }
         self.symbols.insert(name, SymbolEntry::Func(func));
+        Ok(())
+    }
+    pub fn is_global(&self) -> bool {
+        self.parent.is_none()
     }
 
     pub fn get(&self, name: &str) -> Option<SymbolEntry> {

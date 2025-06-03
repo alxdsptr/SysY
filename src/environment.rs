@@ -6,7 +6,7 @@ use crate::label_gen::LabelGenerator;
 use crate::sym_table::SymbolTable;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct WhileEnv {
+pub struct WhileEnv {
     pub start: BasicBlock,
     pub next: BasicBlock,
 }
@@ -15,7 +15,7 @@ impl WhileEnv {
         WhileEnv { start, next }
     }
 }
-pub(crate) struct Environment<'a>{
+pub struct Environment<'a>{
     pub program: &'a mut Program,
     pub cur_func: Option<Function>,
     pub cur_bb: Option<BasicBlock>,
@@ -24,7 +24,7 @@ pub(crate) struct Environment<'a>{
     pub sym_table: Rc<RefCell<SymbolTable>>,
 }
 impl Environment<'_> {
-    pub fn new(program: &mut Program) -> Self {
+    pub fn new(program: &mut Program) -> Environment {
         Environment {
             program,
             cur_func: None,
@@ -34,6 +34,7 @@ impl Environment<'_> {
             sym_table: Rc::new(RefCell::new(SymbolTable::new())),
         }
     }
+    // pub fn get_symbol_entry()
     pub fn create_block(&mut self, name: &str) -> BasicBlock{
         let func_data = self.program.func_mut(self.cur_func.unwrap());
         let name = self.label_gen.borrow_mut().get_label(name);
@@ -79,6 +80,11 @@ impl Environment<'_> {
             .unwrap();
         res
     }
+    pub fn add_global_alloc(&mut self, initializer: Value, name: String) -> Value {
+        let res = self.program.new_value().global_alloc(initializer);
+        self.program.set_value_name(res, Some(format!("@{}", name)));
+        res
+    }
     pub fn add_store(&mut self, value: Value, dest: Value) -> Value {
         let func_data = self.program.func_mut(self.cur_func.unwrap());
         let res = func_data.dfg_mut().new_value().store(value, dest);
@@ -109,10 +115,6 @@ impl Environment<'_> {
     pub fn add_integer(&mut self, value: i32) -> Value {
         let func_data = self.program.func_mut(self.cur_func.unwrap());
         let res = func_data.dfg_mut().new_value().integer(value);
-        func_data.layout_mut().bb_mut(self.cur_bb.unwrap().clone())
-            .insts_mut()
-            .push_key_back(res)
-            .unwrap();
         res
     }
     pub fn add_branch(&mut self, cond: Value, true_bb: BasicBlock, false_bb: BasicBlock) -> Value{
@@ -132,12 +134,17 @@ impl Environment<'_> {
             .push_key_back(inst)
             .unwrap();
     }
+    pub fn is_global(&self) -> bool {
+        self.sym_table.borrow().is_global()
+    }
 }
 
 #[derive(Debug)]
 pub enum FrontendError {
     ContinueOutsideLoop,
     BreakOutsideLoop,
+    EvalNonConstExpr,
+    DivisionByZero,
     UndefinedVariable(String),
     UndefinedFunction(String),
     Redefinition(String),
