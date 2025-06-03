@@ -101,8 +101,8 @@ Stmt: Stmt = {
     <lval: LVal> "=" <exp: Exp> ";" => Stmt::Assign(lval, Rc::new(exp)),
     <exp: Exp?> ";" => Stmt::Exp(Rc::new(exp)),
     <block: Block> => Stmt::Block(Rc::new(block)),
-    "if" "(" <exp: Exp> ")" <stmt: Stmt>  => Stmt::If(Rc::new(exp), Rc::new(stmt), Rc::new(None)),
-    "if" "(" <exp: Exp> ")" <stmt: withElse> "else" <else_: Stmt> => Stmt::If(Rc::new(exp), Rc::new(stmt), Rc::new(Some(else_))),
+    "if" "(" <exp: Exp> ")" <stmt: Stmt>  => Stmt::If(Rc::new(exp), Rc::new(stmt), None),
+    "if" "(" <exp: Exp> ")" <stmt: withElse> "else" <else_: Stmt> => Stmt::If(Rc::new(exp), Rc::new(stmt), Some(Rc::new(else_))),
     "while" "(" <exp: Exp> ")" <stmt: Stmt> => Stmt::While(Rc::new(exp), Rc::new(stmt)),
     "break" ";" => Stmt::Break,
     "continue" ";" => Stmt::Continue,
@@ -120,82 +120,80 @@ LVal: LVal = {
 };
 
 Exp: Exp = {
-  <l_or_exp: LOrExp> => Exp { l_or_exp: Rc::new(l_or_exp) },
+  <exp: LOrExp> => exp,
 };
-LOrExp: LOrExp = {
-    <l_and_exp: LAndExp> => LOrExp::LAndExp( Rc::new(l_and_exp) ),
-    <l_or_exp: LOrExp> "||" <l_and_exp: LAndExp> => LOrExp::Or( Rc::new(l_or_exp), Rc::new(l_and_exp) )
+LOrExp: Exp = {
+    <l_and_exp: LAndExp> => l_and_exp,
+    <l_or_exp: LOrExp> "||" <l_and_exp: LAndExp> => Exp::BinaryExp(BinaryOp::Lor, Rc::new(l_or_exp), Rc::new(l_and_exp) )
 };
-LAndExp: LAndExp = {
-    <eq_exp: EqExp> => LAndExp::EqExp( Rc::new(eq_exp) ),
-    <l_and_exp: LAndExp> "&&" <eq_exp: EqExp> => LAndExp::And( Rc::new(l_and_exp), Rc::new(eq_exp) )
+LAndExp: Exp = {
+    <eq_exp: EqExp> => eq_exp,
+    <l_and_exp: LAndExp> "&&" <eq_exp: EqExp> => Exp::BinaryExp(BinaryOp::Land, Rc::new(l_and_exp), Rc::new(eq_exp) )
 };
-EqExp: EqExp = {
-    <rel_exp: RelExp> => EqExp::RelExp( Rc::new(rel_exp) ),
-    <eq_exp: EqExp> <eq_op: EqOp> <rel_exp: RelExp> => EqExp::Eq(Rc::new(eq_exp), eq_op, Rc::new(rel_exp))
+EqExp: Exp = {
+    <rel_exp: RelExp> => rel_exp,
+    <eq_exp: EqExp> <eq_op: EqOp> <rel_exp: RelExp> => Exp::BinaryExp(eq_op, Rc::new(eq_exp), Rc::new(rel_exp))
 };
-EqOp: EqOp = {
-    "==" => EqOp::Eq,
-    "!=" => EqOp::Neq
+EqOp: BinaryOp = {
+    "==" => BinaryOp::Eq,
+    "!=" => BinaryOp::Neq
 };
-RelExp: RelExp = {
-    <add_exp: AddExp> => RelExp::AddExp (Rc::new(add_exp)),
-    <rel_exp: RelExp> <rel_op: RelOp> <add_exp: AddExp> => RelExp::Rel(Rc::new(rel_exp), rel_op, Rc::new(add_exp))
+RelExp: Exp = {
+    <add_exp: AddExp> => add_exp,
+    <rel_exp: RelExp> <rel_op: RelOp> <add_exp: AddExp> => Exp::BinaryExp(rel_op, Rc::new(rel_exp), Rc::new(add_exp))
 };
-RelOp: RelOp = {
-    "<" => RelOp::Lt,
-    ">" => RelOp::Gt,
-    "<=" => RelOp::Le,
-    ">=" => RelOp::Ge
+RelOp: BinaryOp = {
+    "<" => BinaryOp::Lt,
+    ">" => BinaryOp::Gt,
+    "<=" => BinaryOp::Le,
+    ">=" => BinaryOp::Ge
 };
-AddExp: AddExp = {
-    <mul_exp: MulExp> => AddExp::MulExp (Rc::new(mul_exp)),
-    <add_exp: AddExp> <add_op: AddOp> <mul_exp: MulExp> => AddExp::Add (Rc::new(add_exp), add_op, Rc::new(mul_exp))
+AddExp: Exp = {
+    <mul_exp: MulExp> => mul_exp,
+    <add_exp: AddExp> <add_op: AddOp> <mul_exp: MulExp> => Exp::BinaryExp(add_op, Rc::new(add_exp), Rc::new(mul_exp))
 };
-AddOp: AddOp = {
-    "+" => AddOp::Plus,
-    "-" => AddOp::Minus
-}
+AddOp: BinaryOp = {
+    "+" => BinaryOp::Add,
+    "-" => BinaryOp::Sub
+};
+MulExp: Exp = {
+    <unary_exp: UnaryExp> => unary_exp,
+    <mul_exp: MulExp> <mul_op: MulOp> <unary_exp: UnaryExp> => Exp::BinaryExp(mul_op, Rc::new(mul_exp), Rc::new(unary_exp))
+};
+MulOp: BinaryOp = {
+    "*" => BinaryOp::Mul,
+    "/" => BinaryOp::Div,
+    "%" => BinaryOp::Mod
+};
 
-MulExp: MulExp = {
-    <unary_exp: UnaryExp> => MulExp::UnaryExp (Rc::new(unary_exp)),
-    <mul_exp: MulExp> <mul_op: MulOp> <unary_exp: UnaryExp> => MulExp::Mul(Rc::new(mul_exp), mul_op, Rc::new(unary_exp))
+UnaryExp: Exp = {
+    <primary_exp: PrimaryExp> => primary_exp,
+    <unary_op: UnaryOp> <unary_exp: UnaryExp> => Exp::UnaryExp(unary_op, Rc::new(unary_exp)),
+    <ident: Ident> "(" <func_rparams: FuncRParams?> ")" => Exp::Call(ident, Rc::new(func_rparams)),
 };
-MulOp: MulOp = {
-    "*" => MulOp::Mul,
-    "/" => MulOp::Div,
-    "%" => MulOp::Mod
+
+UnaryOp: UnaryOp = {
+    "+" => UnaryOp::Pos,
+    "-" => UnaryOp::Neg,
+    "!" => UnaryOp::Not
 };
-//UnaryExp    ::= ...
-//              | IDENT "(" [FuncRParams] ")"
-//              | ...;
-//FuncRParams ::= Exp {"," Exp};
-//
-UnaryExp: UnaryExp = {
-    <primary_exp: PrimaryExp> => UnaryExp::PrimaryExp(Rc::new(primary_exp)),
-    <unary_op: UnaryOp> <unary_exp: UnaryExp> => UnaryExp::UnaryOp(unary_op, Rc::new(unary_exp)),
-    <ident: Ident> "(" <func_rparams: FuncRParams?> ")" => UnaryExp::Call(ident, Rc::new(func_rparams)),
-};
-FuncRParams: FuncRParams = {
+
+
+FuncRParams: Vec<Exp> = {
     <exp: Exp> <rparams: ("," <Exp>)*> => {
         let mut params = vec![exp];
         params.extend(rparams);
-        FuncRParams { params: Rc::new(params) }
+        params
     }
 };
 
 
-PrimaryExp: PrimaryExp = {
-    "(" <exp: Exp> ")" => PrimaryExp::Parens(Rc::new(exp)),
-    <number: Number> => PrimaryExp::Number(number),
-    <lval: LVal> => PrimaryExp::LVal(lval),
+PrimaryExp: Exp = {
+    "(" <exp: Exp> ")" => exp,
+    <number: Number> => Exp::Num(number),
+    <lval: LVal> => Exp::LVal(lval),
 };
 
-UnaryOp: UnaryOp = {
-    "+" => UnaryOp::Plus,
-    "-" => UnaryOp::Minus,
-    "!" => UnaryOp::Not
-};
 
 Number: i32 = <num: IntConst> => num;
 

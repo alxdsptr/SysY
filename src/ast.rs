@@ -1,7 +1,12 @@
+use std::cell::RefCell;
 use std::iter::Product;
 use std::rc::Rc;
+use koopa::ir;
 use koopa::ir::*;
 use koopa::ir::builder_traits::*;
+use crate::environment::Environment;
+use crate::sym_table::SymbolTable;
+
 #[derive(Debug)]
 pub struct CompUnit {
     pub comp_unit: Rc<Option<CompUnit>>,
@@ -15,9 +20,31 @@ pub struct FuncDef {
     pub ident: String,
     pub block: Rc<Block>,
 }
+impl FuncDef {
+    pub fn get_param(&self) -> Vec<(Option<String>, Type)>{
+        match &*self.params {
+            Some(params) => {
+                params.params.iter().map(|param| {
+                    (Some(param.ident.clone()), param.btype.to_type())
+                }).collect()
+            },
+            None => vec![],
+        }
+    }
+}
 #[derive(Debug)]
 pub struct FuncFParams {
     pub params: Rc<Vec<FuncFParam>>,
+}
+impl FuncFParams {
+    pub fn add_params(&self, env: &mut Environment) {
+        let func = env.program.func_mut(env.cur_func.unwrap());
+        for i in 0..self.params.len() {
+            let val = func.params()[i];
+            let name = self.params[i].ident.clone();
+            env.sym_table.borrow_mut().insert_var(name, val);
+        }
+    }
 }
 #[derive(Debug)]
 pub struct FuncFParam {
@@ -47,100 +74,72 @@ pub enum Stmt {
     Assign(LVal, Rc<Exp>),
     Exp(Rc<Option<Exp>>),
     Block(Rc<Block>),
-    If(Rc<Exp>, Rc<Stmt>, Rc<Option<Stmt>>),
+    If(Rc<Exp>, Rc<Stmt>, Option<Rc<Stmt>>),
     While(Rc<Exp>, Rc<Stmt>),
     Break,
     Continue,
 }
 
 #[derive(Debug)]
-pub struct Exp {
-    pub l_or_exp: Rc<LOrExp>,
+pub enum Exp {
+    Num(Number),
+    LVal(LVal),
+    UnaryExp(UnaryOp, Rc<Exp>),
+    BinaryExp(BinaryOp, Rc<Exp>, Rc<Exp>),
+    Call(String, Rc<Option<Vec<Exp>>>),
 }
 #[derive(Debug)]
-pub enum LOrExp {
-    LAndExp(Rc<LAndExp>),
-    Or(Rc<LOrExp>, Rc<LAndExp>),
+pub enum UnaryOp {
+    Pos,
+    Neg,
+    Not,
 }
 #[derive(Debug)]
-pub enum LAndExp {
-    EqExp(Rc<EqExp>),
-    And(Rc<LAndExp>, Rc<EqExp>),
-}
-#[derive(Debug)]
-pub enum EqExp {
-    RelExp(Rc<RelExp>),
-    Eq(Rc<EqExp>, EqOp, Rc<RelExp>),
-}
-#[derive(Debug)]
-pub enum EqOp {
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
     Eq,
     Neq,
-}
-#[derive(Debug)]
-pub enum RelExp {
-    AddExp(Rc<AddExp>),
-    Rel(Rc<RelExp>, RelOp, Rc<AddExp>),
-}
-#[derive(Debug)]
-pub enum RelOp {
     Gt,
     Ge,
     Lt,
     Le,
+    Land,
+    Lor
+}
+impl BinaryOp {
+    pub fn need_short_circuit(&self) -> bool {
+        match self {
+            BinaryOp::Land | BinaryOp::Lor => true,
+            _ => false,
+        }
+    }
+    pub fn to_koopa_op(&self) -> ir::BinaryOp {
+        match self {
+            BinaryOp::Add => ir::BinaryOp::Add,
+            BinaryOp::Sub => ir::BinaryOp::Sub,
+            BinaryOp::Mul => ir::BinaryOp::Mul,
+            BinaryOp::Div => ir::BinaryOp::Div,
+            BinaryOp::Mod => ir::BinaryOp::Mod,
+            BinaryOp::Eq => ir::BinaryOp::Eq,
+            BinaryOp::Neq => ir::BinaryOp::NotEq,
+            BinaryOp::Gt => ir::BinaryOp::Gt,
+            BinaryOp::Ge => ir::BinaryOp::Ge,
+            BinaryOp::Lt => ir::BinaryOp::Lt,
+            BinaryOp::Le => ir::BinaryOp::Le,
+            BinaryOp::Land | BinaryOp::Lor => panic!("Logical operations should not be converted to koopa IR directly"),
+        }
+    }
 }
 
-#[derive(Debug)]
-pub enum AddExp {
-    MulExp(Rc<MulExp>),
-    Add(Rc<AddExp>, AddOp, Rc<MulExp>),
-}
-#[derive(Debug)]
-pub enum AddOp {
-    Plus,
-    Minus,
-}
-
-#[derive(Debug)]
-pub enum MulExp {
-    UnaryExp(Rc<UnaryExp>),
-    Mul(Rc<MulExp>, MulOp, Rc<UnaryExp>),
-}
-#[derive(Debug)]
-pub enum MulOp {
-    Mul,
-    Div,
-    Mod,
-}
-
-#[derive(Debug)]
-pub enum UnaryExp {
-    PrimaryExp(Rc<PrimaryExp>),
-    UnaryOp(UnaryOp, Rc<UnaryExp>),
-    Call(String, Rc<Option<FuncRParams>>),
-}
-#[derive(Debug)]
-pub struct FuncRParams {
-    pub params: Rc<Vec<Exp>>,
-}
-
-#[derive(Debug)]
-pub enum PrimaryExp {
-    Parens(Rc<Exp>),
-    Number(Number),
-    LVal(LVal),
-}
 #[derive(Debug)]
 pub struct LVal {
     pub ident: String,
 }
 
-#[derive(Debug)]
-pub enum UnaryOp {
-    Plus,
-    Minus,
-    Not,
-}
 #[derive(Debug)]
 pub enum Decl {
     ConstDecl(Rc<ConstDecl>),
@@ -179,5 +178,14 @@ pub enum InitVal {
 #[derive(Debug)]
 pub enum BType {
     Int,
+}
+impl BType {
+    pub fn to_type(&self) -> Type{
+        match self {
+            BType::Int => {
+                Type::get_i32()
+            }
+        }
+    }
 }
 pub type Number = i32;
