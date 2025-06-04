@@ -1,15 +1,16 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use koopa::ir::{Function, Value};
+use koopa::ir::{Function, Type, Value};
 use crate::ast::Number;
 use crate::environment::FrontendError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SymbolEntry {
     Const(Number),
     Var(Value),
-    Func(Function)
+    Func(Function),
+    Array(Value, Rc<Vec<i32>>, Type, bool), // Value, dimensions, type, is_const
 
 }
 pub struct SymbolTable {
@@ -53,13 +54,27 @@ impl SymbolTable {
         self.symbols.insert(name, SymbolEntry::Func(func));
         Ok(())
     }
+    pub fn insert_array(
+        &mut self,
+        name: String,
+        value: Value,
+        dimensions: Rc<Vec<i32>>,
+        ty: Type,
+        is_const: bool,
+    ) -> Result<(), FrontendError> {
+        if self.symbols.contains_key(&name) {
+            return Err(FrontendError::Redefinition(name));
+        }
+        self.symbols.insert(name, SymbolEntry::Array(value, dimensions, ty, is_const));
+        Ok(())
+    }
     pub fn is_global(&self) -> bool {
         self.parent.is_none()
     }
 
     pub fn get(&self, name: &str) -> Option<SymbolEntry> {
         if let Some(value) = self.symbols.get(name) {
-            Some(*value)
+            Some(value.clone())
         } else if let Some(parent) = &self.parent {
             parent.borrow().get(name)
         } else {

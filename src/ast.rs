@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use koopa::ir;
 use koopa::ir::*;
@@ -194,6 +196,7 @@ impl BinaryOp {
 #[derive(Debug)]
 pub struct LVal {
     pub ident: String,
+    pub array_index: Vec<Exp>,
 }
 
 #[derive(Debug)]
@@ -209,12 +212,14 @@ pub struct ConstDecl {
 #[derive(Debug)]
 pub struct ConstDef {
     pub ident: String,
-    pub const_init_val: Rc<ConstInitVal>,
+    pub array_size: Vec<Exp>,
+    pub const_init_val: Rc<InitVal>,
 }
-#[derive(Debug)]
-pub enum ConstInitVal {
-    ConstExp(Rc<Exp>)
-}
+// #[derive(Debug)]
+// pub enum ConstInitVal {
+//     ConstExp(Rc<Exp>),
+//     Array(Option<Rc<Vec<ConstInitVal>>>),
+// }
 
 
 #[derive(Debug)]
@@ -224,12 +229,13 @@ pub struct VarDecl {
 }
 #[derive(Debug)]
 pub enum VarDef {
-    Def(String),
-    Init(String, Rc<InitVal>),
+    Def(String, Vec<Exp>),
+    Init(String, Vec<Exp>, Rc<InitVal>),
 }
 #[derive(Debug)]
 pub enum InitVal {
     Exp(Rc<Exp>),
+    Array(Rc<RefCell<VecDeque<InitVal>>>),
 }
 #[derive(Debug)]
 pub enum BType {

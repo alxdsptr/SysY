@@ -103,6 +103,15 @@ impl Environment<'_> {
             .unwrap();
         res
     }
+    pub fn add_get_ptr(&mut self, src: Value, index: Value) -> Value {
+        let func_data = self.program.func_mut(self.cur_func.unwrap());
+        let res = func_data.dfg_mut().new_value().get_elem_ptr(src, index);
+        func_data.layout_mut().bb_mut(self.cur_bb.unwrap().clone())
+            .insts_mut()
+            .push_key_back(res)
+            .unwrap();
+        res
+    }
     pub fn add_ret(&mut self, value: Option<Value>) -> Value {
         let func_data = self.program.func_mut(self.cur_func.unwrap());
         let res = func_data.dfg_mut().new_value().ret(value);
@@ -128,6 +137,15 @@ impl Environment<'_> {
             .unwrap();
         res
     }
+    pub fn add_aggregate(&mut self, values: Vec<Value>) -> Value {
+        let func_data = self.program.func_mut(self.cur_func.unwrap());
+        let res = func_data.dfg_mut().new_value().aggregate(values);
+        // func_data.layout_mut().bb_mut(self.cur_bb.unwrap().clone())
+        //     .insts_mut()
+        //     .push_key_back(res)
+        //     .unwrap();
+        res
+    }
 
     pub fn add_inst(&mut self, inst: Value) {
         let func_data = self.program.func_mut(self.cur_func.unwrap());
@@ -147,6 +165,9 @@ pub enum FrontendError {
     BreakOutsideLoop,
     EvalNonConstExpr,
     DivisionByZero,
+    InvalidArrayDim,
+    InvalidArrayInitializer,
+    ArrayIndexMismatch(String),
     UndefinedVariable(String),
     UndefinedFunction(String),
     Redefinition(String),

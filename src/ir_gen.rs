@@ -1,9 +1,12 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use koopa::ir::{BasicBlock, FunctionData, Type, Value};
 use koopa::ir;
 use koopa::ir::builder::{LocalInstBuilder, ValueBuilder};
 use crate::ast;
 use crate::ast::*;
+use crate::ast::VarDef::Init;
 use crate::environment::*;
 use crate::sym_table::{SymbolEntry};
 
@@ -79,24 +82,105 @@ impl IRGen for Decl {
         Ok(())
     }
 }
+// pub fn dim_to_type(env: &mut Environment, base_type: Type, dims: &Vec<Exp>) -> Result<Type, FrontendError> {
+//     let mut current_type = base_type;
+//     for dim in dims.iter().rev() {
+//         let dim_value = dim.eval_const(env)?;
+//         if dim_value <= 0 {
+//             return Err(FrontendError::InvalidArrayDim);
+//         }
+//         current_type = Type::get_array(current_type, dim_value as usize);
+//     }
+//     Ok(current_type)
+// }
+fn convert_dim(env: &mut Environment, array_dim: &Vec<Exp>) -> Result<(Vec<i32>, usize), FrontendError>{
+    let mut raw_dim = Vec::with_capacity(array_dim.len());
+    let mut total = 1;
+    for dim in array_dim.iter() {
+        let dim_value = dim.eval_const(env)?;
+        if dim_value <= 0 {
+            return Err(FrontendError::InvalidArrayDim);
+        }
+        raw_dim.push(dim_value as i32);
+        total *= dim_value as usize;
+    }
+    Ok((raw_dim, total))
+}
+fn get_init_vals(env: &mut Environment, dim: &Vec<i32>, inits: Rc<RefCell<VecDeque<InitVal>>>, is_const: bool) -> Result<Vec<Value>, FrontendError> {
+    let mut res = Vec::new();
+    let mut cum_dim = dim.clone();
+    for i in (0..dim.len() - 1).rev() {
+        if cum_dim[i] <= 0 {
+            return Err(FrontendError::InvalidArrayInitializer);
+        }
+        cum_dim[i] *= cum_dim[i + 1];
+    }
+    get_init_vals_helper(env, &cum_dim, inits, &mut res, is_const)?;
+    Ok(res)
+}
+fn get_init_vals_helper(env: &mut Environment, dim: &[i32], inits: Rc<RefCell<VecDeque<InitVal>>>, res: &mut Vec<Value>, is_const: bool) -> Result<(), FrontendError>{
+    while !inits.borrow().is_empty() {
+        let init = inits.borrow_mut().pop_front().unwrap();
+        match init {
+            InitVal::Exp(exp) => {
+                let value = if is_const {
+                    exp.generate_ir(env)?
+                } else {
+                    let res = exp.eval_const(env)?;
+                    env.add_integer(res)
+                };
+                res.push(value);
+            },
+            InitVal::Array(inits_) => {
+                if dim.is_empty() {
+                    return Err(FrontendError::InvalidArrayInitializer);
+                }
+                let len = res.len() as i32;
+                if len % dim.last().unwrap() != 0 {
+                    return Err(FrontendError::InvalidArrayInitializer);
+                } 
+                for (i, d) in dim.iter().enumerate() {
+                    if len % d == 0 {
+                        get_init_vals_helper(env, &dim[i..], inits_, res, is_const)?;
+                        break;
+                    }
+                }
+            },
+        }
+    }
+    let len = res.len() as i32;
+    for _ in len..dim[0] {
+        res.push(env.add_integer(0));
+    }
+    Ok(())
+}
 impl IRGen for VarDecl {
     type Output = ();
     fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
         for var_def in self.var_defs.iter() {
             match var_def {
-                VarDef::Def(ident) => {
+                VarDef::Def(ident, array_dim) => {
+                    let (raw_dim, total) = convert_dim(env, array_dim)?;
+                    let ty = match array_dim.is_empty() {
+                        true => self.btype.to_type(),
+                        false => Type::get_array(self.btype.to_type(), total)
+                    };
                     let val = match env.is_global() {
                         true => {
-                            let init = env.program.new_value().zero_init(self.btype.to_type());
+                            let init = env.program.new_value().zero_init(ty);
                             env.add_global_alloc(init, ident.clone())
                         },
                         false => {
-                            env.add_alloc(self.btype.to_type())
+                            env.add_alloc(ty)
                         },
                     };
-                    env.sym_table.borrow_mut().insert_var(ident.clone(), val)?;
+                    match array_dim.is_empty() {
+                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val)?,
+                        false => env.sym_table.borrow_mut().insert_array(ident.clone(), val, Rc::new(raw_dim), self.btype.to_type(), true)?
+                    }
                 }
-                VarDef::Init(ident, exp) => {
+                VarDef::Init(ident, array_dim, exp) => {
+                    let (raw_dim, total) = convert_dim(env, array_dim)?;
                     let val = match env.is_global() {
                         true => {
                             let init = match exp.as_ref() {
@@ -104,21 +188,40 @@ impl IRGen for VarDecl {
                                     let value = exp.eval_const(env)?;
                                     env.program.new_value().integer(value)
                                 },
+                                InitVal::Array(inits) => {
+                                    let res = get_init_vals(env, &raw_dim, inits.clone(), true)?;
+                                    env.add_aggregate(res)
+                                }
                             };
                             env.add_global_alloc(init, ident.clone())
                         },
                         false => {
-                            let value = match exp.as_ref() {
+                            let ty = match array_dim.is_empty() {
+                                true => self.btype.to_type(),
+                                false => Type::get_array(self.btype.to_type(), total)
+                            };
+                            let pos = env.add_alloc(ty);
+                            match exp.as_ref() {
                                 InitVal::Exp(exp) => {
-                                    exp.generate_ir(env)?
+                                    let value = exp.generate_ir(env)?;
+                                    env.add_store(value, pos);
+                                },
+                                InitVal::Array(inits) => {
+                                    let res = get_init_vals(env, &raw_dim, inits.clone(), true)?;
+                                    for i in 0..total {
+                                        let temp = env.add_integer(i as i32);
+                                        let ptr = env.add_get_ptr(pos, temp);
+                                        env.add_store(res[i], ptr);
+                                    }
                                 }
                             };
-                            let pos = env.add_alloc(self.btype.to_type());
-                            env.add_store(value, pos);
                             pos
                         },
                     };
-                    env.sym_table.borrow_mut().insert_var(ident.clone(), val)?;
+                    match array_dim.is_empty() {
+                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val)?,
+                        false => env.sym_table.borrow_mut().insert_array(ident.clone(), val, Rc::new(raw_dim), self.btype.to_type(), false)?
+                    }
                 },
             }
         }
@@ -130,24 +233,30 @@ impl IRGen for ConstDecl {
     type Output = ();
     fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
         for const_def in self.const_defs.iter() {
-            let init_val = match const_def.const_init_val.as_ref() {
-                ConstInitVal::ConstExp(exp) => {
-                    exp.eval_const(env)?
+            let (raw_dim, total) = convert_dim(env, &const_def.array_size)?;
+            match const_def.const_init_val.as_ref() {
+                InitVal::Exp(exp) => {
+                    let init_val = exp.eval_const(env)?;
+                    env.sym_table.borrow_mut().insert_const(const_def.ident.clone(), init_val)?;
+                },
+                InitVal::Array(inits) => {
+                    let res = get_init_vals(env, &raw_dim, inits.clone(), true)?;
+                    let init = env.add_aggregate(res);
+                    match env.is_global() {
+                        true => {
+                            env.add_global_alloc(init, const_def.ident.clone());
+                        },
+                        false => {
+                            let ty = Type::get_array(self.btype.to_type(), total);
+                            let pos = env.add_alloc(ty);
+                            env.add_store(init, pos);
+                            env.sym_table.borrow_mut().insert_array(const_def.ident.clone(), pos, Rc::new(raw_dim), self.btype.to_type(), true)?;
+                            
+                        },
+                    };
+                    
                 }
             };
-            // let pos = match env.is_global() {
-            //     true => {
-            //         let init_val = env.program.new_value().integer(init_val);
-            //         env.add_global_alloc(init_val, const_def.ident.clone())
-            //     },
-            //     false => {
-            //         let init_val = env.add_integer(init_val);
-            //         let pos = env.add_alloc(self.btype.to_type());
-            //         env.add_store(init_val, pos);
-            //         pos
-            //     }
-            // };
-            env.sym_table.borrow_mut().insert_const(const_def.ident.clone(), init_val)?;
         }
         Ok(())
     }
@@ -255,6 +364,13 @@ impl Stmt {
                             SymbolEntry::Var(var) => {
                                 env.add_store(value, var);
                             },
+                            SymbolEntry::Array(var, dims, ty, is_const) => {
+                                if is_const {
+                                    return Err(FrontendError::InvalidAssignment(name.clone()));
+                                }
+                                let ptr = get_array_ptr(env, var, lval, &dims, name.clone())?;
+                                env.add_store(value, ptr);
+                            },
                             _ => return Err(FrontendError::InvalidAssignment(name.clone())),
                         }
                     },
@@ -264,6 +380,22 @@ impl Stmt {
             },
         }
     }
+}
+pub fn get_array_ptr(env: &mut Environment, var: Value, lval: &LVal, dims: &Rc<Vec<i32>>, name: String) -> Result<Value, FrontendError> {
+    let mut cum = 1;
+    let mut res = env.add_integer(0);
+    if dims.len() != lval.array_index.len() {
+        return Err(FrontendError::ArrayIndexMismatch(name));
+    }
+    for i in (0..dims.len()).rev() {
+        let temp = lval.array_index.get(i).unwrap().generate_ir(env)?;
+        let integer = env.add_integer(dims[i]);
+        let temp = env.add_binary_inst(ir::BinaryOp::Mul, temp, integer);
+        res = env.add_binary_inst(ir::BinaryOp::Add, res, temp);
+        cum = cum * dims[i];
+    }
+    let ptr = env.add_get_ptr(var, res); 
+    Ok(ptr)
 }
 
 impl IRGen for Exp {
@@ -336,6 +468,11 @@ impl IRGen for Exp {
                     Some(SymbolEntry::Const(value)) => {
                         let const_value = env.add_integer(value);
                         Ok(const_value)
+                    },
+                    Some(SymbolEntry::Array(var, dims, ty, _)) => {
+                        let ptr = get_array_ptr(env, var, lval, &dims, lval.ident.clone())?;
+                        let res = env.add_load(ptr);
+                        Ok(res)
                     },
                     _ => Err(FrontendError::UndefinedVariable(lval.ident.clone())),
                 }

@@ -1,5 +1,7 @@
 use crate::ast::*;
 use std::rc::Rc;
+use std::cell::RefCell;
+use std::collections::VecDeque;
 
 // lalrpop 里的约定
 grammar;
@@ -78,8 +80,9 @@ ConstDecl: ConstDecl = {
   }
 };
 ConstDef: ConstDef = {
-  <ident: Ident> "=" <const_init_val: ConstInitVal> => ConstDef {
+  <ident: Ident> <array_size: ("[" <Exp> "]")*> "=" <const_init_val: InitVal> => ConstDef {
     ident,
+    array_size,
     const_init_val: Rc::new(const_init_val),
   }
 };
@@ -96,16 +99,43 @@ VarDecl: VarDecl = {
 };
 
 VarDef: VarDef = {
-  <ident: Ident> => VarDef::Def(ident),
-  <ident: Ident> "=" <init_val: InitVal> => VarDef::Init(ident, Rc::new(init_val)),
+  <ident: Ident> <array_index: ("[" <Exp> "]")*> => VarDef::Def(ident, array_index),
+  <ident: Ident> <array_index: ("[" <Exp> "]")*> "=" <init_val: InitVal> => VarDef::Init(ident, array_index, Rc::new(init_val)),
 };
+// InitVal       ::= Exp | "{" [InitVal {"," InitVal}] "}";
 InitVal: InitVal = {
   <exp: Exp> => InitVal::Exp(Rc::new(exp)),
+  "{" <init: (InitVal ("," <InitVal>)* )? > "}" => {
+    let mut init_vals = VecDeque::new();
+    match init {
+      Some((first, rest)) => {
+        init_vals.push_back(first);
+        init_vals.extend(rest);
+        InitVal::Array(Rc::new(RefCell::new(init_vals)))
+      }
+      None => {
+        InitVal::Array(Rc::new(RefCell::new(VecDeque::new())))
+      }
+    }
+  }
 };
-
-ConstInitVal: ConstInitVal = {
-  <const_exp: Exp> => ConstInitVal::ConstExp(Rc::new(const_exp)),
-};
+// ConstInitVal  ::= ConstExp | "{" [ConstInitVal {"," ConstInitVal}] "}";
+//ConstInitVal: ConstInitVal = {
+//  <const_exp: Exp> => ConstInitVal::ConstExp(Rc::new(const_exp)),
+//  "{" <const_init: (ConstInitVal ("," <ConstInitVal>)* )? > "}" => {
+//        let mut const_init_vals = vec![];
+//        match const_init {
+//          Some((first, rest)) => {
+//            const_init_vals.push(first);
+//            const_init_vals.extend(rest);
+//            ConstInitVal::Array(Some(Rc::new(const_init_vals)))
+//          }
+//          None => {
+//            ConstInitVal::Array(None)
+//          }
+//        }
+//  }
+//};
 
 BType: BType = "int" => BType::Int;
 
@@ -129,7 +159,7 @@ withElse: Stmt = {
 };
 
 LVal: LVal = {
-    <ident: Ident> => LVal{ ident },
+    <ident: Ident> <array_index: ("[" <Exp> "]")*>=> LVal{ ident, array_index },
 };
 
 Exp: Exp = {
