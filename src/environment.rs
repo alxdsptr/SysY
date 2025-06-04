@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use koopa::ir::{BasicBlock, Function, Program, BinaryOp, Value};
+use koopa::ir::{BasicBlock, Function, Program, BinaryOp, Value, Type, FunctionData};
 use koopa::ir::builder::*;
 use crate::label_gen::LabelGenerator;
 use crate::sym_table::SymbolTable;
@@ -9,11 +9,6 @@ use crate::sym_table::SymbolTable;
 pub struct WhileEnv {
     pub start: BasicBlock,
     pub next: BasicBlock,
-}
-impl WhileEnv {
-    pub fn new(start: BasicBlock, next: BasicBlock) -> Self {
-        WhileEnv { start, next }
-    }
 }
 pub struct Environment<'a>{
     pub program: &'a mut Program,
@@ -50,6 +45,12 @@ impl Environment<'_> {
     }
     pub fn exit_scope(&mut self, old_table: Rc<RefCell<SymbolTable>>) {
         self.sym_table = old_table;
+    }
+    pub fn add_decl(&mut self, name: &str, params_ty: Vec<Type>, ret_ty: Type) -> Result<(), FrontendError> {
+        let function = self.program.new_func(
+            FunctionData::new_decl(format!("@{}", name), params_ty.clone(), ret_ty.clone()));
+        self.sym_table.borrow_mut().insert_func(name.to_string(), function)?;
+        Ok(())
     }
     pub fn add_binary_inst(
         &mut self, op: BinaryOp, lhs: Value, rhs: Value,

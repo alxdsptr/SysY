@@ -10,6 +10,7 @@ pub enum SymbolEntry {
     Const(Number),
     Var(Value),
     Func(Function),
+    FuncParam(Value),
     Array(Value, Rc<Vec<i32>>, Type, bool), // Value, dimensions, type, is_const
 
 }
@@ -33,11 +34,15 @@ impl SymbolTable {
         }
     }
 
-    pub fn insert_var(&mut self, name: String, value: Value) -> Result<(), FrontendError> {
+    pub fn insert_var(&mut self, name: String, value: Value, is_param: bool) -> Result<(), FrontendError> {
         if self.symbols.contains_key(&name) {
             return Err(FrontendError::Redefinition(name));
         }
-        self.symbols.insert(name, SymbolEntry::Var(value));
+        if is_param {
+            self.symbols.insert(name, SymbolEntry::FuncParam(value));
+        } else{
+            self.symbols.insert(name, SymbolEntry::Var(value));
+        }
         Ok(())
     }
     pub fn insert_const(&mut self, name: String, value: Number) -> Result<(), FrontendError> {

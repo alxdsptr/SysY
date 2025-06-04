@@ -3,6 +3,7 @@ mod ir_gen;
 mod sym_table;
 mod label_gen;
 mod environment;
+mod opt;
 
 use lalrpop_util::lalrpop_mod;
 use std::env::args;
@@ -10,7 +11,9 @@ use std::fs::read_to_string;
 use std::io::{Result, Write};
 use koopa::back::KoopaGenerator;
 use koopa::ir::Program;
+use koopa::opt::{Pass, PassManager};
 use crate::environment::{Environment, IRGen};
+use opt::dead_code_elimination::DeadCodeElimination;
 
 // 引用 lalrpop 生成的解析器
 // 因为我们刚刚创建了 sysy.lalrpop, 所以模块名是 sysy
@@ -36,8 +39,12 @@ fn main() -> Result<()> {
     let mut output_file = std::fs::File::create(output)?;
     match ast.generate_ir(&mut env){
         Ok(_) => {
+            let mut passman = PassManager::new();
+            passman.register(Pass::Module(Box::new(DeadCodeElimination)));
+            passman.run_passes(&mut program);
+
             let mut gen = KoopaGenerator::new(Vec::new());
-            gen.generate_on(&program).unwrap();
+            gen.generate_on(&program)?;
             let text_form_ir = std::str::from_utf8(&gen.writer()).unwrap().to_string();
             println!("dump IR to file");
             output_file.write_all(text_form_ir.as_bytes())?;

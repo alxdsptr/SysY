@@ -6,13 +6,21 @@ use koopa::ir;
 use koopa::ir::builder::{LocalInstBuilder, ValueBuilder};
 use crate::ast;
 use crate::ast::*;
-use crate::ast::VarDef::Init;
 use crate::environment::*;
 use crate::sym_table::{SymbolEntry};
 
 impl IRGen for CompUnit {
     type Output = ();
     fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
+        env.add_decl("getint", Vec::new(), Type::get_i32())?;
+        env.add_decl("getch", Vec::new(), Type::get_i32())?;
+        env.add_decl("getarray", vec![Type::get_pointer(Type::get_i32())], Type::get_i32())?;
+        env.add_decl("putint", vec![Type::get_i32()], Type::get_unit())?;
+        env.add_decl("putch", vec![Type::get_i32()], Type::get_unit())?;
+        env.add_decl("putarray", vec![Type::get_i32(), Type::get_pointer(Type::get_i32())], Type::get_unit())?;
+        env.add_decl("starttime", Vec::new(), Type::get_unit())?;
+        env.add_decl("stoptime", Vec::new(), Type::get_unit())?;
+        
         for comp in self.items.iter() {
             comp.generate_ir(env)?;
         }
@@ -40,6 +48,7 @@ impl IRGen for FuncDef {
             },
         ));
         env.cur_func = Some(func);
+        env.sym_table.borrow_mut().insert_func(self.ident.clone(), func)?;
         let old_table = env.enter_scope();
         if let Some(params) = &*self.params {
             params.add_params(env)?;
@@ -48,7 +57,6 @@ impl IRGen for FuncDef {
         env.cur_bb = Some(entry);
         self.block.generate_ir(env)?;
         env.exit_scope(old_table);
-        env.sym_table.borrow_mut().insert_func(self.ident.clone(), func)?;
         Ok(())
     }
 }
@@ -175,7 +183,7 @@ impl IRGen for VarDecl {
                         },
                     };
                     match array_dim.is_empty() {
-                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val)?,
+                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val, false)?,
                         false => env.sym_table.borrow_mut().insert_array(ident.clone(), val, Rc::new(raw_dim), self.btype.to_type(), true)?
                     }
                 }
@@ -219,7 +227,7 @@ impl IRGen for VarDecl {
                         },
                     };
                     match array_dim.is_empty() {
-                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val)?,
+                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val, false)?,
                         false => env.sym_table.borrow_mut().insert_array(ident.clone(), val, Rc::new(raw_dim), self.btype.to_type(), false)?
                     }
                 },
@@ -330,7 +338,7 @@ impl Stmt {
                 let cond = exp.generate_ir(env)?;
                 env.add_branch(cond, body_bb.clone(), end_bb.clone());
 
-                self.gen_single_block(env, body_bb, stmt, end_bb)?;
+                self.gen_single_block(env, body_bb, stmt, start_bb)?;
                 env.while_env = old_while_env;
 
                 env.cur_bb = Some(end_bb);
@@ -364,7 +372,7 @@ impl Stmt {
                             SymbolEntry::Var(var) => {
                                 env.add_store(value, var);
                             },
-                            SymbolEntry::Array(var, dims, ty, is_const) => {
+                            SymbolEntry::Array(var, dims, _, is_const) => {
                                 if is_const {
                                     return Err(FrontendError::InvalidAssignment(name.clone()));
                                 }
@@ -465,11 +473,14 @@ impl IRGen for Exp {
                         let load_inst = env.add_load(var);
                         Ok(load_inst)
                     },
+                    Some(SymbolEntry::FuncParam(var)) => {
+                        Ok(var)
+                    },
                     Some(SymbolEntry::Const(value)) => {
                         let const_value = env.add_integer(value);
                         Ok(const_value)
                     },
-                    Some(SymbolEntry::Array(var, dims, ty, _)) => {
+                    Some(SymbolEntry::Array(var, dims, _, _)) => {
                         let ptr = get_array_ptr(env, var, lval, &dims, lval.ident.clone())?;
                         let res = env.add_load(ptr);
                         Ok(res)

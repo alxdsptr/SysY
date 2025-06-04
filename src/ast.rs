@@ -29,7 +29,7 @@ impl FuncDef {
         match &*self.params {
             Some(params) => {
                 params.params.iter().map(|param| {
-                    (Some(param.ident.clone()), param.btype.to_type())
+                    (Some(format!("@{}", param.ident)), param.btype.to_type())
                 }).collect()
             },
             None => vec![],
@@ -46,7 +46,7 @@ impl FuncFParams {
         for i in 0..self.params.len() {
             let val = func.params()[i];
             let name = self.params[i].ident.clone();
-            env.sym_table.borrow_mut().insert_var(name, val)?;
+            env.sym_table.borrow_mut().insert_var(name, val, true)?;
         }
         Ok(())
     }
