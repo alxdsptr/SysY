@@ -110,6 +110,8 @@ impl Environment<'_> {
             .insts_mut()
             .push_key_back(res)
             .unwrap();
+        // let new_bb = self.create_block("after_ret");
+        // self.cur_bb = Some(new_bb);
         res
     }
     pub fn add_integer(&mut self, value: i32) -> Value {

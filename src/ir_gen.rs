@@ -43,9 +43,10 @@ impl IRGen for FuncDef {
         }
         let entry= env.create_block("entry");
         env.cur_bb = Some(entry);
+        self.block.generate_ir(env)?;
         env.exit_scope(old_table);
         env.sym_table.borrow_mut().insert_func(self.ident.clone(), func)?;
-        Ok(self.block.generate_ir(env)?)
+        Ok(())
     }
 }
 
@@ -289,8 +290,8 @@ impl IRGen for Exp {
                         env.add_jump(end_bb);
 
                         env.cur_bb = Some(end_bb);
-                        env.add_load(result);
-                        Ok(result)
+                        let res = env.add_load(result);
+                        Ok(res)
                     },
                     ast::BinaryOp::Land => {
                         let end_bb = env.create_block("land_end");
@@ -310,8 +311,8 @@ impl IRGen for Exp {
                         env.add_jump(end_bb);
 
                         env.cur_bb = Some(end_bb);
-                        env.add_load(result);
-                        Ok(result)
+                        let res = env.add_load(result);
+                        Ok(res)
                     },
                     _ => {
                         let lhs_val = lhs.generate_ir(env)?;
@@ -329,10 +330,7 @@ impl IRGen for Exp {
                 let entry = env.sym_table.borrow().get(&lval.ident);
                 match entry {
                     Some(SymbolEntry::Var(var)) => {
-                        let load_inst = env.program.func_mut(env.cur_func.unwrap())
-                            .dfg_mut()
-                            .new_value()
-                            .load(var);
+                        let load_inst = env.add_load(var);
                         Ok(load_inst)
                     },
                     Some(SymbolEntry::Const(value)) => {
@@ -351,8 +349,8 @@ impl IRGen for Exp {
                         Ok(sub)
                     },
                     UnaryOp::Not => {
-                        let one = env.add_integer(1);
-                        let eq = env.add_binary_inst(ir::BinaryOp::Eq, exp_val, one);
+                        let zero = env.add_integer(0);
+                        let eq = env.add_binary_inst(ir::BinaryOp::Eq, exp_val, zero);
                         Ok(eq)
                     },
                     UnaryOp::Pos => {
