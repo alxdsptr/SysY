@@ -104,9 +104,18 @@ impl Environment<'_> {
             .unwrap();
         res
     }
-    pub fn add_get_ptr(&mut self, src: Value, index: Value) -> Value {
+    pub fn add_getelemptr(&mut self, src: Value, index: Value) -> Value {
         let func_data = self.program.func_mut(self.cur_func.unwrap());
         let res = func_data.dfg_mut().new_value().get_elem_ptr(src, index);
+        func_data.layout_mut().bb_mut(self.cur_bb.unwrap().clone())
+            .insts_mut()
+            .push_key_back(res)
+            .unwrap();
+        res
+    }
+    pub fn add_get_ptr(&mut self, src: Value, index: Value) -> Value {
+        let func_data = self.program.func_mut(self.cur_func.unwrap());
+        let res = func_data.dfg_mut().new_value().get_ptr(src, index);
         func_data.layout_mut().bb_mut(self.cur_bb.unwrap().clone())
             .insts_mut()
             .push_key_back(res)

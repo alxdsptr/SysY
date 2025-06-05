@@ -4,6 +4,7 @@ use std::rc::Rc;
 use koopa::ir;
 use koopa::ir::*;
 use crate::environment::{Environment, FrontendError};
+use crate::ir_gen::convert_dim;
 use crate::sym_table::{SymbolEntry};
 
 #[derive(Debug)]
@@ -29,7 +30,7 @@ impl FuncDef {
         match &*self.params {
             Some(params) => {
                 params.params.iter().map(|param| {
-                    (Some(format!("@{}", param.ident)), param.btype.to_type())
+                    (Some(format!("@{}", param.ident)), param.to_type())
                 }).collect()
             },
             None => vec![],
@@ -42,11 +43,25 @@ pub struct FuncFParams {
 }
 impl FuncFParams {
     pub fn add_params(&self, env: &mut Environment) -> Result<(), FrontendError> {
-        let func = env.program.func_mut(env.cur_func.unwrap());
+        let mut params_vals = Vec::new();
+        {
+            let func = env.program.func_mut(env.cur_func.unwrap());
+            for param in func.params() {
+                params_vals.push(*param);
+            }
+        }
         for i in 0..self.params.len() {
-            let val = func.params()[i];
+            let val = params_vals[i];
             let name = self.params[i].ident.clone();
-            env.sym_table.borrow_mut().insert_var(name, val, true)?;
+            match self.params[i].array_size.as_ref() {
+                Some(arr) => {
+                    let (array_size, _) = convert_dim(env, arr)?;
+                    env.sym_table.borrow_mut().insert_array_ptr(name, val, array_size.into())?;
+                },
+                None => {
+                    env.sym_table.borrow_mut().insert_var(name, val, true)?;
+                }
+            }
         }
         Ok(())
     }
@@ -55,6 +70,17 @@ impl FuncFParams {
 pub struct FuncFParam {
     pub btype: BType,
     pub ident: String,
+    pub array_size: Option<Vec<Exp>>,
+}
+impl FuncFParam {
+    pub fn to_type(&self) -> Type {
+        match self.array_size {
+            Some(_) => {
+                Type::get_pointer(self.btype.to_type())
+            },
+            None => self.btype.to_type()
+        }
+    }
 }
 
 #[derive(Debug)]

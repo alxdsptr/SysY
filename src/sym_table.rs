@@ -12,6 +12,7 @@ pub enum SymbolEntry {
     Func(Function),
     FuncParam(Value),
     Array(Value, Rc<Vec<i32>>, Type, bool), // Value, dimensions, type, is_const
+    ArrayPtr(Value, Rc<Vec<i32>>),
 
 }
 pub struct SymbolTable {
@@ -57,6 +58,18 @@ impl SymbolTable {
             return Err(FrontendError::Redefinition(name));
         }
         self.symbols.insert(name, SymbolEntry::Func(func));
+        Ok(())
+    }
+    pub fn insert_array_ptr(
+        &mut self,
+        name: String,
+        value: Value,
+        dimensions: Rc<Vec<i32>>,
+    ) -> Result<(), FrontendError> {
+        if self.symbols.contains_key(&name) {
+            return Err(FrontendError::Redefinition(name));
+        }
+        self.symbols.insert(name, SymbolEntry::ArrayPtr(value, dimensions));
         Ok(())
     }
     pub fn insert_array(

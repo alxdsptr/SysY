@@ -101,7 +101,7 @@ impl IRGen for Decl {
 //     }
 //     Ok(current_type)
 // }
-fn convert_dim(env: &mut Environment, array_dim: &Vec<Exp>) -> Result<(Vec<i32>, usize), FrontendError>{
+pub fn convert_dim(env: &mut Environment, array_dim: &Vec<Exp>) -> Result<(Vec<i32>, usize), FrontendError>{
     let mut raw_dim = Vec::with_capacity(array_dim.len());
     let mut total = 1;
     for dim in array_dim.iter() {
@@ -220,7 +220,7 @@ impl IRGen for VarDecl {
                                     let res = get_init_vals(env, &raw_dim, inits.clone(), true)?;
                                     for i in 0..total {
                                         let temp = env.add_integer(i as i32);
-                                        let ptr = env.add_get_ptr(pos, temp);
+                                        let ptr = env.add_getelemptr(pos, temp);
                                         env.add_store(res[i], ptr);
                                     }
                                 }
@@ -377,9 +377,13 @@ impl Stmt {
                                 if is_const {
                                     return Err(FrontendError::InvalidAssignment(name.clone()));
                                 }
-                                let ptr = get_array_ptr(env, var, lval, &dims, name.clone())?;
+                                let ptr = get_array_pos(env, var, lval, &dims, name.clone())?;
                                 env.add_store(value, ptr);
                             },
+                            SymbolEntry::ArrayPtr(var, dims) => {
+                                let ptr = get_array_pos_from_ptr(env, var, lval, &dims)?;
+                                env.add_store(value, ptr);
+                            }
                             _ => return Err(FrontendError::InvalidAssignment(name.clone())),
                         }
                     },
@@ -390,7 +394,7 @@ impl Stmt {
         }
     }
 }
-pub fn get_array_ptr(env: &mut Environment, var: Value, lval: &LVal, dims: &Rc<Vec<i32>>, name: String) -> Result<Value, FrontendError> {
+pub fn get_array_pos(env: &mut Environment, var: Value, lval: &LVal, dims: &Rc<Vec<i32>>, name: String) -> Result<Value, FrontendError> {
     let mut cum = 1;
     let mut res = env.add_integer(0);
     if dims.len() != lval.array_index.len() {
@@ -403,7 +407,60 @@ pub fn get_array_ptr(env: &mut Environment, var: Value, lval: &LVal, dims: &Rc<V
         res = env.add_binary_inst(ir::BinaryOp::Add, res, temp);
         cum = cum * dims[i];
     }
-    let ptr = env.add_get_ptr(var, res); 
+    let ptr = env.add_getelemptr(var, res);
+    Ok(ptr)
+}
+pub fn get_array_pos_from_ptr(env: &mut Environment, var: Value, lval: &LVal, dims: &Rc<Vec<i32>>) -> Result<Value, FrontendError> {
+    let mut cum = 1;
+    let mut res = env.add_integer(0);
+    if dims.len() + 1 != lval.array_index.len() {
+        return Err(FrontendError::ArrayIndexMismatch(lval.ident.clone()));
+    }
+    for i in (0..dims.len() + 1).rev() {
+        let temp = lval.array_index.get(i).unwrap().generate_ir(env)?;
+        let integer = env.add_integer(cum);
+        let temp = env.add_binary_inst(ir::BinaryOp::Mul, temp, integer);
+        res = env.add_binary_inst(ir::BinaryOp::Add, res, temp);
+        if i < dims.len() {
+            cum = cum * dims[i];
+        }
+    }
+    let ptr = env.add_get_ptr(var, res);
+    Ok(ptr)
+}
+pub fn get_array_ptr(env: &mut Environment, var: Value, lval: &LVal, dims: &Rc<Vec<i32>>) -> Result<Value, FrontendError> {
+    let mut cum_dim = VecDeque::new();
+    let mut cum = 1;
+    for d in dims.iter().rev() {
+        cum_dim.push_front(cum);
+        cum *= *d;
+    }
+    let mut res = env.add_integer(0);
+    for i in 0..lval.array_index.len() {
+        let temp = lval.array_index.get(i).unwrap().generate_ir(env)?;
+        let integer = env.add_integer(cum_dim[i]);
+        let temp = env.add_binary_inst(ir::BinaryOp::Mul, temp, integer);
+        res = env.add_binary_inst(ir::BinaryOp::Add, res, temp);
+    }
+    let ptr = env.add_getelemptr(var, res);
+    Ok(ptr)
+}
+pub fn get_array_ptr_from_ptr(env: &mut Environment, var: Value, lval: &LVal, dims: &Rc<Vec<i32>>) -> Result<Value, FrontendError> {
+    let mut cum_dim = VecDeque::new();
+    cum_dim.push_front(1);
+    let mut cum = 1;
+    for d in dims.iter().rev() {
+        cum *= *d;
+        cum_dim.push_front(cum);
+    }
+    let mut res = env.add_integer(0);
+    for i in 0..lval.array_index.len() {
+        let temp = lval.array_index.get(i).unwrap().generate_ir(env)?;
+        let integer = env.add_integer(cum_dim[i]);
+        let temp = env.add_binary_inst(ir::BinaryOp::Mul, temp, integer);
+        res = env.add_binary_inst(ir::BinaryOp::Add, res, temp);
+    }
+    let ptr = env.add_get_ptr(var, res);
     Ok(ptr)
 }
 
@@ -482,10 +539,23 @@ impl IRGen for Exp {
                         Ok(const_value)
                     },
                     Some(SymbolEntry::Array(var, dims, _, _)) => {
-                        let ptr = get_array_ptr(env, var, lval, &dims, lval.ident.clone())?;
-                        let res = env.add_load(ptr);
-                        Ok(res)
+                        if lval.array_index.len() != dims.len() {
+                            get_array_ptr(env, var, lval, &dims)
+                        } else {
+                            let ptr = get_array_pos(env, var, lval, &dims, lval.ident.clone())?;
+                            let res = env.add_load(ptr);
+                            Ok(res)
+                        }
                     },
+                    Some(SymbolEntry::ArrayPtr(var, dims)) => {
+                        if lval.array_index.len() != dims.len() + 1{
+                            get_array_ptr_from_ptr(env, var, lval, &dims)
+                        } else {
+                            let ptr = get_array_pos_from_ptr(env, var, lval, &dims)?;
+                            let res = env.add_load(ptr);
+                            Ok(res)
+                        }
+                    }
                     _ => Err(FrontendError::UndefinedVariable(lval.ident.clone())),
                 }
             }

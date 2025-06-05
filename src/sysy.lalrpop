@@ -42,7 +42,14 @@ FuncFParams: FuncFParams = {
 };
 // FuncFParam ::= BType IDENT ["[" "]" {"[" ConstExp "]"}];
 FuncFParam: FuncFParam = {
-  <btype: BType> <ident: Ident> => FuncFParam { btype, ident }
+    <btype: BType> <ident: Ident> <arr: (("[" "]") ("[" <Exp> "]")*)?> => FuncFParam {
+        btype,
+        ident,
+        array_size: match arr {
+            Some((_, array_size)) => Some(array_size),
+            None => None,
+        },
+    }
 };
 
 FuncType: FuncType = {
