@@ -15,18 +15,7 @@ match {
   // 剩下的情况采用默认方式处理
   _
 }
-// CompUnit ::= [CompUnit] (Decl | FuncDef);
 
-
-//
-//FuncDef     ::= FuncType IDENT "(" [FuncFParams] ")" Block;
-//FuncType    ::= "void" | "int";
-//FuncFParams ::= FuncFParam {"," FuncFParam};
-//FuncFParam  ::= BType IDENT;
-//
-//pub CompUnit: CompUnit = <items: (DeclOrFunc)*> => CompUnit {
-//  items: Rc::new(items),
-//};
 pub CompUnit: CompUnit = {
     <items: (DeclOrFunc)+> => CompUnit { items: Rc::new(items) }
 };
@@ -51,6 +40,7 @@ FuncFParams: FuncFParams = {
     FuncFParams { params: Rc::new(fparams) }
   }
 };
+// FuncFParam ::= BType IDENT ["[" "]" {"[" ConstExp "]"}];
 FuncFParam: FuncFParam = {
   <btype: BType> <ident: Ident> => FuncFParam { btype, ident }
 };

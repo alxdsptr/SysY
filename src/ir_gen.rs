@@ -127,6 +127,7 @@ fn get_init_vals(env: &mut Environment, dim: &Vec<i32>, inits: Rc<RefCell<VecDeq
     Ok(res)
 }
 fn get_init_vals_helper(env: &mut Environment, dim: &[i32], inits: Rc<RefCell<VecDeque<InitVal>>>, res: &mut Vec<Value>, is_const: bool) -> Result<(), FrontendError>{
+    let before = res.len() as i32;
     while !inits.borrow().is_empty() {
         let init = inits.borrow_mut().pop_front().unwrap();
         match init {
@@ -147,7 +148,7 @@ fn get_init_vals_helper(env: &mut Environment, dim: &[i32], inits: Rc<RefCell<Ve
                 if len % dim.last().unwrap() != 0 {
                     return Err(FrontendError::InvalidArrayInitializer);
                 } 
-                for (i, d) in dim.iter().enumerate() {
+                for (i, d) in dim.iter().enumerate().skip(1) {
                     if len % d == 0 {
                         get_init_vals_helper(env, &dim[i..], inits_, res, is_const)?;
                         break;
@@ -156,8 +157,9 @@ fn get_init_vals_helper(env: &mut Environment, dim: &[i32], inits: Rc<RefCell<Ve
             },
         }
     }
-    let len = res.len() as i32;
-    for _ in len..dim[0] {
+    let after = res.len() as i32;
+    let diff = after - before;
+    for _ in diff..dim[0] {
         res.push(env.add_integer(0));
     }
     Ok(())
@@ -184,7 +186,7 @@ impl IRGen for VarDecl {
                     };
                     match array_dim.is_empty() {
                         true => env.sym_table.borrow_mut().insert_var(ident.clone(), val, false)?,
-                        false => env.sym_table.borrow_mut().insert_array(ident.clone(), val, Rc::new(raw_dim), self.btype.to_type(), true)?
+                        false => env.sym_table.borrow_mut().insert_array(ident.clone(), val, Rc::new(raw_dim), self.btype.to_type(), false)?
                     }
                 }
                 VarDef::Init(ident, array_dim, exp) => {
@@ -250,19 +252,18 @@ impl IRGen for ConstDecl {
                 InitVal::Array(inits) => {
                     let res = get_init_vals(env, &raw_dim, inits.clone(), true)?;
                     let init = env.add_aggregate(res);
-                    match env.is_global() {
+                    let pos = match env.is_global() {
                         true => {
-                            env.add_global_alloc(init, const_def.ident.clone());
+                            env.add_global_alloc(init, const_def.ident.clone())
                         },
                         false => {
                             let ty = Type::get_array(self.btype.to_type(), total);
                             let pos = env.add_alloc(ty);
                             env.add_store(init, pos);
-                            env.sym_table.borrow_mut().insert_array(const_def.ident.clone(), pos, Rc::new(raw_dim), self.btype.to_type(), true)?;
-                            
+                            pos
                         },
                     };
-                    
+                    env.sym_table.borrow_mut().insert_array(const_def.ident.clone(), pos, Rc::new(raw_dim), self.btype.to_type(), true)?;
                 }
             };
         }
@@ -397,7 +398,7 @@ pub fn get_array_ptr(env: &mut Environment, var: Value, lval: &LVal, dims: &Rc<V
     }
     for i in (0..dims.len()).rev() {
         let temp = lval.array_index.get(i).unwrap().generate_ir(env)?;
-        let integer = env.add_integer(dims[i]);
+        let integer = env.add_integer(cum);
         let temp = env.add_binary_inst(ir::BinaryOp::Mul, temp, integer);
         res = env.add_binary_inst(ir::BinaryOp::Add, res, temp);
         cum = cum * dims[i];

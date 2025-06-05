@@ -125,9 +125,12 @@ impl Environment<'_> {
         res
     }
     pub fn add_integer(&mut self, value: i32) -> Value {
-        let func_data = self.program.func_mut(self.cur_func.unwrap());
-        let res = func_data.dfg_mut().new_value().integer(value);
-        res
+        if self.is_global() {
+            self.program.new_value().integer(value)
+        } else {
+            let func_data = self.program.func_mut(self.cur_func.unwrap());
+            func_data.dfg_mut().new_value().integer(value)
+        }
     }
     pub fn add_branch(&mut self, cond: Value, true_bb: BasicBlock, false_bb: BasicBlock) -> Value{
         let func_data = self.program.func_mut(self.cur_func.unwrap());
@@ -139,13 +142,12 @@ impl Environment<'_> {
         res
     }
     pub fn add_aggregate(&mut self, values: Vec<Value>) -> Value {
-        let func_data = self.program.func_mut(self.cur_func.unwrap());
-        let res = func_data.dfg_mut().new_value().aggregate(values);
-        // func_data.layout_mut().bb_mut(self.cur_bb.unwrap().clone())
-        //     .insts_mut()
-        //     .push_key_back(res)
-        //     .unwrap();
-        res
+        if self.is_global() {
+            self.program.new_value().aggregate(values)
+        } else {
+            let func_data = self.program.func_mut(self.cur_func.unwrap());
+            func_data.dfg_mut().new_value().aggregate(values)
+        }
     }
 
     pub fn add_inst(&mut self, inst: Value) {
