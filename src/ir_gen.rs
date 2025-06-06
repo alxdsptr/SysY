@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use koopa::ir::{BasicBlock, FunctionData, Type, Value};
 use koopa::ir;
@@ -86,7 +86,26 @@ impl IRGen for Decl {
         match self {
             Decl::ConstDecl(const_decl) => const_decl.generate_ir(env)?,
             Decl::VarDecl(var_decl) => var_decl.generate_ir(env)?,
+            Decl::StructDecl(struct_decl) => {}
         }
+        Ok(())
+    }
+}
+impl IRGen for StructDecl {
+    type Output = ();
+    fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError> {
+        let mut field_map = HashMap::new();
+        for field in self.fields.iter() {
+            for def in field.var_defs.iter() {
+                if let VarDef::Def(ident, array_dim) = def {
+                    let (raw_dim, _) = convert_dim(env, array_dim)?;
+                    field_map.insert(ident.clone(), (field.btype, raw_dim));
+                } else {
+                    return Err(FrontendError::InvalidStructFieldDef);
+                }
+            }
+        }
+        env.sym_table.borrow_mut().insert_struct_decl(self.ident.clone(), field_map)?;
         Ok(())
     }
 }
@@ -373,7 +392,7 @@ impl Stmt {
                             SymbolEntry::Var(var) => {
                                 env.add_store(value, var);
                             },
-                            SymbolEntry::Array(var, dims, _, is_const) => {
+                            SymbolEntry::Array(var, dims, is_const) => {
                                 if is_const {
                                     return Err(FrontendError::InvalidAssignment(name.clone()));
                                 }
@@ -538,7 +557,7 @@ impl IRGen for Exp {
                         let const_value = env.add_integer(value);
                         Ok(const_value)
                     },
-                    Some(SymbolEntry::Array(var, dims, _, _)) => {
+                    Some(SymbolEntry::Array(var, dims, _)) => {
                         if lval.array_index.len() != dims.len() {
                             get_array_ptr(env, var, lval, &dims)
                         } else {

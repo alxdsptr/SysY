@@ -1,24 +1,23 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::rc::Rc;
 use koopa::ir::{Function, Type, Value};
-use crate::ast::Number;
+use crate::ast::{BType, Number};
 use crate::environment::FrontendError;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum SymbolEntry {
     Const(Number),
     Var(Value),
     Func(Function),
-    FuncParam(Value),
-    Array(Value, Rc<Vec<i32>>, Type, bool), // Value, dimensions, type, is_const
+    Array(Value, Rc<Vec<i32>>, bool), // Value, dimensions, is_const
     ArrayPtr(Value, Rc<Vec<i32>>),
-
+    StructDecl(Rc<HashMap<String, (BType, Vec<i32>)>>),
 }
 pub struct SymbolTable {
     symbols: HashMap<String, SymbolEntry>,
     parent: Option<Rc<RefCell<SymbolTable>>>,
-
 }
 impl SymbolTable {
     pub fn new() -> Self {
@@ -33,6 +32,17 @@ impl SymbolTable {
             symbols: HashMap::new(),
             parent: Some(parent.clone()),
         }
+    }
+    pub fn insert_struct_decl(
+        &mut self,
+        name: String,
+        struct_decl: HashMap<String, (BType, Vec<i32>)>,
+    ) -> Result<(), FrontendError> {
+        if self.symbols.contains_key(&name) {
+            return Err(FrontendError::Redefinition(name));
+        }
+        self.symbols.insert(name, SymbolEntry::StructDecl(struct_decl.into()));
+        Ok(())
     }
 
     pub fn insert_var(&mut self, name: String, value: Value, is_param: bool) -> Result<(), FrontendError> {
@@ -83,7 +93,7 @@ impl SymbolTable {
         if self.symbols.contains_key(&name) {
             return Err(FrontendError::Redefinition(name));
         }
-        self.symbols.insert(name, SymbolEntry::Array(value, dimensions, ty, is_const));
+        self.symbols.insert(name, SymbolEntry::Array(value, dimensions, is_const));
         Ok(())
     }
     pub fn is_global(&self) -> bool {

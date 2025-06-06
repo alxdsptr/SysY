@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use koopa::ir;
 use koopa::ir::*;
@@ -229,11 +229,17 @@ pub struct LVal {
 pub enum Decl {
     ConstDecl(Rc<ConstDecl>),
     VarDecl(Rc<VarDecl>),
+    StructDecl(Rc<StructDecl>)
+}
+#[derive(Debug)]
+pub struct StructDecl {
+    pub ident: String,
+    pub fields: Rc<Vec<VarDecl>>,
 }
 #[derive(Debug)]
 pub struct ConstDecl {
     pub btype: BType,
-    pub const_defs: Rc<Vec<ConstDef>>,
+    pub const_defs: Rc<Vec<ConstDef>>   ,
 }
 #[derive(Debug)]
 pub struct ConstDef {
@@ -263,7 +269,7 @@ pub enum InitVal {
     Exp(Rc<Exp>),
     Array(Rc<RefCell<VecDeque<InitVal>>>),
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum BType {
     Int,
 }

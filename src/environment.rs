@@ -179,6 +179,7 @@ pub enum FrontendError {
     DivisionByZero,
     InvalidArrayDim,
     InvalidArrayInitializer,
+    InvalidStructFieldDef,
     ArrayIndexMismatch(String),
     UndefinedVariable(String),
     UndefinedFunction(String),
@@ -188,5 +189,6 @@ pub enum FrontendError {
 
 pub trait IRGen {
     type Output;
-    fn generate_ir(&self, env: &mut Environment) -> Result<Self::Output, FrontendError>;
+    fn generate_ir(&self, env: &mut Environment)
+        -> Result<Self::Output, FrontendError>;
 }

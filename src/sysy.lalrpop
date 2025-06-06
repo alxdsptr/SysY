@@ -64,8 +64,16 @@ BlockItem: BlockItem = {
 };
 Decl: Decl = {
   <const_decl: ConstDecl> => Decl::ConstDecl(Rc::new(const_decl)),
-  <var_decl: VarDecl> => Decl::VarDecl(Rc::new(var_decl))
+  <var_decl: VarDecl> => Decl::VarDecl(Rc::new(var_decl)),
+  <struct_decl: StructDecl> => Decl::StructDecl(Rc::new(struct_decl)),
 };
+StructDecl: StructDecl = {
+    "struct" <ident: Ident> "{" <var_decs: (VarDecl)*> "}" ";" => StructDecl {
+        ident,
+        fields: Rc::new(var_decs),
+    }
+}
+
 ConstDecl: ConstDecl = {
   "const" <btype: BType> <const_def: ConstDef> <defs: ("," <ConstDef>)*> ";" => {
     let mut const_defs = vec![const_def];
@@ -116,23 +124,7 @@ InitVal: InitVal = {
     }
   }
 };
-// ConstInitVal  ::= ConstExp | "{" [ConstInitVal {"," ConstInitVal}] "}";
-//ConstInitVal: ConstInitVal = {
-//  <const_exp: Exp> => ConstInitVal::ConstExp(Rc::new(const_exp)),
-//  "{" <const_init: (ConstInitVal ("," <ConstInitVal>)* )? > "}" => {
-//        let mut const_init_vals = vec![];
-//        match const_init {
-//          Some((first, rest)) => {
-//            const_init_vals.push(first);
-//            const_init_vals.extend(rest);
-//            ConstInitVal::Array(Some(Rc::new(const_init_vals)))
-//          }
-//          None => {
-//            ConstInitVal::Array(None)
-//          }
-//        }
-//  }
-//};
+
 
 BType: BType = "int" => BType::Int;
 
