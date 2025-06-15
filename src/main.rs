@@ -1,5 +1,6 @@
 mod opt;
 mod frontend;
+mod backend;
 
 use lalrpop_util::lalrpop_mod;
 use std::env::args;
