@@ -21,27 +21,16 @@ pub enum Comp{
 #[derive(Debug)]
 pub struct FuncDef {
     pub func_type: FuncType,
-    pub params: Rc<Option<FuncFParams>>,
+    pub params: Rc<Vec<FuncFParam>>,
     pub ident: String,
     pub block: Rc<Block>,
 }
 impl FuncDef {
     pub fn get_param(&self) -> Vec<(Option<String>, Type)>{
-        match &*self.params {
-            Some(params) => {
-                params.params.iter().map(|param| {
-                    (Some(format!("@{}", param.ident)), param.to_type())
-                }).collect()
-            },
-            None => vec![],
-        }
+        self.params.iter().map(|param| {
+            (Some(format!("@{}", param.ident)), param.to_type())
+        }).collect()
     }
-}
-#[derive(Debug)]
-pub struct FuncFParams {
-    pub params: Rc<Vec<FuncFParam>>,
-}
-impl FuncFParams {
     pub fn add_params(&self, env: &mut Environment) -> Result<(), FrontendError> {
         let mut params_vals = Vec::new();
         {
@@ -59,7 +48,9 @@ impl FuncFParams {
                     env.sym_table.borrow_mut().insert_array_ptr(name, val, array_size.into())?;
                 },
                 None => {
-                    env.sym_table.borrow_mut().insert_var(name, val, true)?;
+                    let pos = env.add_alloc(self.params[i].to_type());
+                    env.add_store(val, pos);
+                    env.sym_table.borrow_mut().insert_var(name, pos)?;
                 }
             }
         }

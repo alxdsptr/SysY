@@ -28,16 +28,16 @@ DeclOrFunc: Comp = {
 FuncDef: FuncDef = {
   <func_type: FuncType> <ident: Ident> "(" <func_params: FuncFParams?> ")" <block: Block> => FuncDef {
     func_type,
-    params: Rc::new(func_params),
+    params: func_params.unwrap_or_else(|| Rc::new(vec![])),
     ident,
     block: Rc::new(block),
   },
 }
-FuncFParams: FuncFParams = {
+FuncFParams: Rc<Vec<FuncFParam>> = {
   <func_param: FuncFParam> <params: ("," <FuncFParam>)*> => {
     let mut fparams = vec![func_param];
     fparams.extend(params);
-    FuncFParams { params: Rc::new(fparams) }
+    Rc::new(fparams)
   }
 };
 // FuncFParam ::= BType IDENT ["[" "]" {"[" ConstExp "]"}];

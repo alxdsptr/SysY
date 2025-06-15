@@ -50,11 +50,9 @@ impl IRGen for FuncDef {
         env.cur_func = Some(func);
         env.sym_table.borrow_mut().insert_func(self.ident.clone(), func)?;
         let old_table = env.enter_scope();
-        if let Some(params) = &*self.params {
-            params.add_params(env)?;
-        }
         let entry= env.create_block("entry");
         env.cur_bb = Some(entry);
+        self.add_params(env)?;
         self.block.generate_ir(env)?;
         env.exit_scope(old_table);
         Ok(())
@@ -185,7 +183,7 @@ impl IRGen for VarDecl {
                         },
                     };
                     match array_dim.is_empty() {
-                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val, false)?,
+                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val)?,
                         false => env.sym_table.borrow_mut().insert_array(ident.clone(), val, Rc::new(raw_dim), self.btype.to_type(), false)?
                     }
                 }
@@ -229,7 +227,7 @@ impl IRGen for VarDecl {
                         },
                     };
                     match array_dim.is_empty() {
-                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val, false)?,
+                        true => env.sym_table.borrow_mut().insert_var(ident.clone(), val)?,
                         false => env.sym_table.borrow_mut().insert_array(ident.clone(), val, Rc::new(raw_dim), self.btype.to_type(), false)?
                     }
                 },
@@ -421,8 +419,8 @@ pub fn get_array_pos_from_ptr(env: &mut Environment, var: Value, lval: &LVal, di
         let integer = env.add_integer(cum);
         let temp = env.add_binary_inst(ir::BinaryOp::Mul, temp, integer);
         res = env.add_binary_inst(ir::BinaryOp::Add, res, temp);
-        if i < dims.len() {
-            cum = cum * dims[i];
+        if i > 0 {
+            cum = cum * dims[i - 1];
         }
     }
     let ptr = env.add_get_ptr(var, res);
@@ -530,9 +528,6 @@ impl IRGen for Exp {
                     Some(SymbolEntry::Var(var)) => {
                         let load_inst = env.add_load(var);
                         Ok(load_inst)
-                    },
-                    Some(SymbolEntry::FuncParam(var)) => {
-                        Ok(var)
                     },
                     Some(SymbolEntry::Const(value)) => {
                         let const_value = env.add_integer(value);
