@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use koopa::ir::{Function, Type, Value};
-use crate::ast::Number;
-use crate::environment::FrontendError;
+use crate::frontend::ast::Number;
+use crate::frontend::environment::FrontendError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SymbolEntry {

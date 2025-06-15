@@ -3,9 +3,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use koopa::ir;
 use koopa::ir::*;
-use crate::environment::{Environment, FrontendError};
-use crate::ir_gen::convert_dim;
-use crate::sym_table::{SymbolEntry};
+use crate::frontend::environment::{Environment, FrontendError};
+use crate::frontend::ir_gen::convert_dim;
+use crate::frontend::sym_table::{SymbolEntry};
 
 #[derive(Debug)]
 pub struct CompUnit {

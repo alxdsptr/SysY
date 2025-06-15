@@ -4,10 +4,10 @@ use std::rc::Rc;
 use koopa::ir::{BasicBlock, FunctionData, Type, Value};
 use koopa::ir;
 use koopa::ir::builder::{LocalInstBuilder, ValueBuilder};
-use crate::ast;
-use crate::ast::*;
-use crate::environment::*;
-use crate::sym_table::{SymbolEntry};
+use crate::frontend::ast;
+use crate::frontend::ast::*;
+use crate::frontend::environment::*;
+use crate::frontend::sym_table::{SymbolEntry};
 
 impl IRGen for CompUnit {
     type Output = ();

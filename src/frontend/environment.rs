@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use koopa::ir::{BasicBlock, Function, Program, BinaryOp, Value, Type, FunctionData};
 use koopa::ir::builder::*;
-use crate::label_gen::LabelGenerator;
-use crate::sym_table::SymbolTable;
+use crate::frontend::label_gen::LabelGenerator;
+use crate::frontend::sym_table::SymbolTable;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct WhileEnv {

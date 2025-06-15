@@ -1,9 +1,5 @@
-mod ast;
-mod ir_gen;
-mod sym_table;
-mod label_gen;
-mod environment;
 mod opt;
+mod frontend;
 
 use lalrpop_util::lalrpop_mod;
 use std::env::args;
@@ -12,7 +8,7 @@ use std::io::{Result, Write};
 use koopa::back::KoopaGenerator;
 use koopa::ir::Program;
 use koopa::opt::{Pass, PassManager};
-use crate::environment::{Environment, IRGen};
+use frontend::environment::{Environment, IRGen};
 use opt::dead_code_elimination::DeadCodeElimination;
 
 // 引用 lalrpop 生成的解析器
