@@ -9,5 +9,7 @@ pub struct Environment<'a> {
     pub var_pos: HashMap<Value, usize>,
     pub output: &'a File,
     pub cur_func: Option<Function>,
+    pub cur_pos: usize,
+    pub stack_size: usize
 
 }

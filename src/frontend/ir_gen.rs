@@ -378,7 +378,8 @@ impl Stmt {
                                 let ptr = get_array_pos(env, var, lval, &dims, name.clone())?;
                                 env.add_store(value, ptr);
                             },
-                            SymbolEntry::ArrayPtr(var, dims) => {
+                            SymbolEntry::ArrayPtr(pos, dims) => {
+                                let var = env.add_load(pos);
                                 let ptr = get_array_pos_from_ptr(env, var, lval, &dims)?;
                                 env.add_store(value, ptr);
                             }
@@ -542,7 +543,8 @@ impl IRGen for Exp {
                             Ok(res)
                         }
                     },
-                    Some(SymbolEntry::ArrayPtr(var, dims)) => {
+                    Some(SymbolEntry::ArrayPtr(pos, dims)) => {
+                        let var = env.add_load(pos);
                         if lval.array_index.len() != dims.len() + 1{
                             get_array_ptr_from_ptr(env, var, lval, &dims)
                         } else {

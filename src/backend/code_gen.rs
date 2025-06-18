@@ -21,11 +21,75 @@ impl CodeGen for Program {
         }
     }
 }
-
+fn compute_stack_size(func: &FunctionData, env: &mut Environment) -> usize {
+    let mut stack_size = 0;
+    for (bb, _) in func.layout().bbs() {
+        for (inst, _) in bb.insts() {
+            let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(inst);
+            match value_data.kind() {
+                ValueKind::Alloc(alloc) => {
+                    let size = value_data.ty().size();
+                    stack_size += size;
+                },
+                _ => {}
+            }
+        }
+    }
+    let param_count = func.params().len();
+    if param_count > 8 {
+        stack_size -= (param_count - 8) * 4; // these params are stored in the stack of the caller
+    }
+    stack_size += 8; // return address and sp
+    // align stack to 16 bytes
+    stack_size = stack_size & (!0xF);
+    stack_size
+}
 impl CodeGen for FunctionData {
     fn code_gen(&self, env: &mut Environment) {
         env.output.write_all(format!("{}:\n", self.name()).as_bytes()).unwrap();
-        for (bb, _) in self.layout().bbs() {
+
+        // store ra and sp to stack
+        env.output.write_all("sw ra, -4(sp)\n".as_bytes()).unwrap();
+        env.output.write_all("sw sp, -8(sp)\n".as_bytes()).unwrap();
+
+        let stack_size = compute_stack_size(self, env);
+        env.output.write_all(format!("addi sp, sp, -{}\n", stack_size).as_bytes()).unwrap();
+        env.stack_size = stack_size;
+        env.cur_pos = 8;
+        let entry_bb = self.layout().entry_bb().unwrap();
+        {
+            let bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(entry_bb);
+            env.output.write_all(format!("{}:\n", bb_data.name().as_ref().unwrap()).as_bytes()).unwrap();
+        }
+        let bb_node = env.program.func(env.cur_func.unwrap()).layout().bbs().node(&entry_bb).unwrap();
+        let param_count = self.params().len();
+        let mut cursor = bb_node.insts().cursor_front();
+        for i in 0..param_count {
+            let inst = cursor.key().unwrap();
+            let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*inst);
+            assert!(matches!(value_data.kind(), ValueKind::Alloc(_)));
+            let offset = if i < 8 {
+                env.cur_pos -= 4;
+                env.stack_size - env.cur_pos
+            } else {
+                env.stack_size + 4 * (i - 8)
+            };
+            env.var_pos.insert(*inst, offset);
+
+            cursor.move_next();
+            let inst = cursor.key().unwrap();
+            let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*inst);
+            assert!(matches!(value_data.kind(), ValueKind::Store(_)));
+            if i < 8 {
+                // argument in ai register, store in pos offset(sp)
+                env.output.write_all(format!("sw a{}, {}(sp)\n", i, offset).as_bytes()).unwrap();
+            }
+        }
+        while let Some(inst) = cursor.key() {
+            inst.code_gen(env);
+            cursor.move_next();
+        }
+        for (bb, _) in self.layout().bbs().iter().skip(1) {
             bb.code_gen(env);
         }
     }
@@ -75,7 +139,7 @@ impl CodeGen for Value{
                 let target_name = env.program.func(env.cur_func.unwrap()).dfg().bb(target).name().as_ref().unwrap();
                 format!("j {}\n", target_name)
             }
-            ValueKind::Alloc(alloc) => {
+            ValueKind::Alloc(_) => {
                 // empty string
                 String::new()
             },
