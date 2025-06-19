@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use koopa::ir::{BasicBlock, Program, ValueKind, Function, Value};
 use koopa::ir::entities::ValueData;
-const FREE_REG: usize = 26;
+const FREE_REG: usize = 25;
 fn get_pred_and_end(program: &Program, func: Function) ->
                (HashMap<BasicBlock, Vec<BasicBlock>>, Vec<BasicBlock>) {
     let func_data = program.func(func);
@@ -116,10 +116,38 @@ pub fn to_string(reg: Register) -> String {
         format!("s{}", reg)
     } else if reg < 19 {
         format!("t{}", reg - 12)
-    } else if reg < 26 {
+    } else if reg < 27 {
         format!("a{}", reg - 19)
     } else {
         panic!("Register out of range: {}", reg);
+    }
+}
+pub const A6: Register = 25;
+pub const A7: Register = 26;
+pub fn from_string(s: &str) -> Result<Register, String> {
+    if s.starts_with("s") {
+        let reg_num = s[1..].parse::<u32>().map_err(|_| format!("Invalid register name: {}", s))?;
+        if reg_num < 12 {
+            Ok(reg_num)
+        } else {
+            Err(format!("Invalid s-register number: {}", reg_num))
+        }
+    } else if s.starts_with("t") {
+        let reg_num = s[1..].parse::<u32>().map_err(|_| format!("Invalid register name: {}", s))?;
+        if reg_num < 7 {
+            Ok(reg_num + 12)
+        } else {
+            Err(format!("Invalid t-register number: {}", reg_num))
+        }
+    } else if s.starts_with("a") {
+        let reg_num = s[1..].parse::<u32>().map_err(|_| format!("Invalid register name: {}", s))?;
+        if reg_num < 7 {
+            Ok(reg_num + 19)
+        } else {
+            Err(format!("Invalid a-register number: {}", reg_num))
+        }
+    } else {
+        Err(format!("Unknown register prefix in name: {}", s))
     }
 }
 struct Node {
@@ -172,7 +200,7 @@ fn alloc_register(
     }
     panic!("No free registers available for value: {:?}", val);
 }
-pub fn get_register_map(program: &Program, func: Function) -> HashMap<Value, Register> {
+pub fn get_register_map(program: &Program, func: Function) -> (HashMap<Value, Register>, u32) {
     let (pred, end_bb) = get_pred_and_end(program, func);
     let order = get_topo_order(&end_bb, &pred);
     let bbs = program.func(func).layout().bbs().keys().collect::<Vec<_>>();
@@ -259,6 +287,7 @@ pub fn get_register_map(program: &Program, func: Function) -> HashMap<Value, Reg
             }
         }
     }
+    let mut max_reg = 0;
     let mut priority_queue: BinaryHeap<Node> = BinaryHeap::new();
     let mut reg_map: HashMap<Value, Register> = HashMap::new();
 
@@ -280,8 +309,10 @@ pub fn get_register_map(program: &Program, func: Function) -> HashMap<Value, Reg
             }
             let conflicts_list = conflicts.get(&val).unwrap();
             // Allocate register for the value
-            alloc_register(&mut reg_map, val, conflicts_list);
-
+            let reg = alloc_register(&mut reg_map, val, conflicts_list);
+            if reg > max_reg {
+                max_reg = reg;
+            }
             for conflict in conflicts_list {
                 if !reg_map.contains_key(conflict) {
                     let conflict_weight = *weight.get(conflict).unwrap() + 1;
@@ -292,6 +323,6 @@ pub fn get_register_map(program: &Program, func: Function) -> HashMap<Value, Reg
         }
 
     }
-    reg_map
+    (reg_map, max_reg)
 }
 
