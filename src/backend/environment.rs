@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
-use koopa::ir::{Function, Program, Value};
+use koopa::ir::{Function, Program, Value, ValueKind};
 use crate::backend::register::{from_string, get_register_map, to_string, Register};
 
 pub struct Environment<'a> {
@@ -51,6 +51,11 @@ impl Environment<'_> {
         self.register_map.get(&value).cloned()
     }
     pub fn get_reg_with_load(&mut self, value: Value, temp_reg: Register) -> Option<Register> {
+        let value_data = self.program.func(self.cur_func.unwrap()).dfg().value(value);
+        if let ValueKind::Integer(integer) = value_data.kind() {
+            self.output.write_all(format!("  li {}, {}\n", to_string(temp_reg), integer.value()).as_bytes()).unwrap();
+            return Some(temp_reg);
+        }
         if let Some(reg) = self.register_map.get(&value) {
             return Some(*reg);
         }

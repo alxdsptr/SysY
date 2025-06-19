@@ -94,13 +94,16 @@ fn compute_stack_size(func: &FunctionData, env: &mut Environment) -> usize {
     stack_size += (env.max_reg_num * 4) as usize; // reserve space for registers
     stack_size += 8; // return address and sp
     // align stack to 16 bytes
-    stack_size = stack_size & (!0xF);
+    stack_size = (stack_size + 15) & (!0xF);
     stack_size
 }
 impl CodeGen for FunctionData {
     fn code_gen(&self, env: &mut Environment) {
-        env.output.write_all(format!("  .globl {}\n", self.name()).as_bytes()).unwrap();
-        env.output.write_all(format!("{}:\n", self.name()).as_bytes()).unwrap();
+        if self.layout().entry_bb().is_none() {
+            return;
+        }
+        env.output.write_all(format!("  .globl {}\n", &self.name()[1..]).as_bytes()).unwrap();
+        env.output.write_all(format!("{}:\n", &self.name()[1..]).as_bytes()).unwrap();
 
         // store ra and sp to stack
         env.output.write_all("  sw ra, -4(sp)\n".as_bytes()).unwrap();
@@ -118,7 +121,7 @@ impl CodeGen for FunctionData {
         let entry_bb = self.layout().entry_bb().unwrap();
         {
             let bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(entry_bb);
-            env.output.write_all(format!("{}:\n", bb_data.name().as_ref().unwrap()).as_bytes()).unwrap();
+            env.output.write_all(format!("{}:\n", &bb_data.name().as_ref().unwrap()[1..]).as_bytes()).unwrap();
         }
         let bb_node = env.program.func(env.cur_func.unwrap()).layout().bbs().node(&entry_bb).unwrap();
         let param_count = self.params().len();
@@ -158,7 +161,7 @@ impl CodeGen for BasicBlock {
     fn code_gen(&self, env: &mut Environment) {
         {
             let bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(*self);
-            env.output.write_all(format!("{}:\n", bb_data.name().as_ref().unwrap()).as_bytes()).unwrap();
+            env.output.write_all(format!("{}:\n", &bb_data.name().as_ref().unwrap()[1..]).as_bytes()).unwrap();
         }
         let bb_node = env.program.func(env.cur_func.unwrap()).layout().bbs().node(self).unwrap();
         for (inst, _) in bb_node.insts() {
@@ -184,10 +187,10 @@ impl CodeGen for Value{
                     BinaryOp::Mod => format!("  rem {}, {}, {}\n", rd, rs1, rs2),
                     BinaryOp::Gt => format!("  sgt {}, {}, {}\n", rd, rs1, rs2),
                     BinaryOp::Lt => format!("  slt {}, {}, {}\n", rd, rs1, rs2),
-                    BinaryOp::Eq => format!("  sub {}, {}, {}\n  seqz {}, {}", rd, rs1, rs2, rd, rd),
-                    BinaryOp::NotEq => format!("  sub {}, {}, {}\n  snez {}, {}", rd, rs1, rs2, rd, rd),
-                    BinaryOp::Ge => format!("  slt {}, {}, {}\n  xori {}, {}, {}", rd, rs1, rs2, rd, rd, 1),
-                    BinaryOp::Le => format!("  sgt {}, {}, {}\n  xori {}, {}, {}", rd, rs1, rs2, rd, rd, 1),
+                    BinaryOp::Eq => format!("  sub {}, {}, {}\n  seqz {}, {}\n", rd, rs1, rs2, rd, rd),
+                    BinaryOp::NotEq => format!("  sub {}, {}, {}\n  snez {}, {}\n", rd, rs1, rs2, rd, rd),
+                    BinaryOp::Ge => format!("  slt {}, {}, {}\n  xori {}, {}, {}\n", rd, rs1, rs2, rd, rd, 1),
+                    BinaryOp::Le => format!("  sgt {}, {}, {}\n  xori {}, {}, {}\n", rd, rs1, rs2, rd, rd, 1),
                     _ => {
                         panic!("Unsupported binary operation: {:?}", binary.op());
                     }
@@ -195,7 +198,7 @@ impl CodeGen for Value{
             },
             ValueKind::Jump(jump) => {
                 let target = jump.target();
-                let target_name = env.program.func(env.cur_func.unwrap()).dfg().bb(target).name().as_ref().unwrap();
+                let target_name = &env.program.func(env.cur_func.unwrap()).dfg().bb(target).name().as_ref().unwrap()[1..];
                 format!("  j {}\n", target_name)
             }
             ValueKind::Alloc(_) => {
@@ -205,7 +208,7 @@ impl CodeGen for Value{
                 String::new()
             },
             ValueKind::Store(store) => {
-                let src = to_string(env.get_register(*self).unwrap());
+                let src = to_string(env.get_reg_with_load(store.value(), A6).unwrap());
                 let dst = env.get_pos(store.dest(), "a6").unwrap();
                 format!("  sw {}, {}\n", src, dst)
             }
@@ -254,8 +257,8 @@ impl CodeGen for Value{
                 let cond = to_string(env.get_reg_with_load(branch.cond(), A6).unwrap());
                 let true_bb = branch.true_bb();
                 let false_bb = branch.false_bb();
-                let true_name = env.program.func(env.cur_func.unwrap()).dfg().bb(true_bb).name().as_ref().unwrap();
-                let false_name = env.program.func(env.cur_func.unwrap()).dfg().bb(false_bb).name().as_ref().unwrap();
+                let true_name = &env.program.func(env.cur_func.unwrap()).dfg().bb(true_bb).name().as_ref().unwrap()[1..];
+                let false_name = &env.program.func(env.cur_func.unwrap()).dfg().bb(false_bb).name().as_ref().unwrap()[1..];
                 format!("  bnez {}, {}\n  j {}\n", cond, true_name, false_name)
             }
             ValueKind::Return(ret) => {
@@ -287,7 +290,7 @@ impl CodeGen for Value{
                 }
 
                 let callee_data = env.program.func(call.callee());
-                let func_name = callee_data.name();
+                let func_name = &callee_data.name()[1..];
                 let mut args = Vec::new();
                 for arg in call.args() {
                     let reg = env.get_reg_with_load(*arg, A6).unwrap();

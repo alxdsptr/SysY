@@ -13,8 +13,6 @@ use frontend::environment::{Environment, IRGen};
 use opt::dead_code_elimination::DeadCodeElimination;
 use crate::backend::generate_asm;
 
-// 引用 lalrpop 生成的解析器
-// 因为我们刚刚创建了 sysy.lalrpop, 所以模块名是 sysy
 lalrpop_mod!(sysy);
 
 fn main() -> Result<()> {
@@ -42,14 +40,14 @@ fn main() -> Result<()> {
             passman.run_passes(&mut program);
 
             match mode.as_str() {
-                "koopa" => {
+                "-koopa" => {
                     let mut gen = KoopaGenerator::new(Vec::new());
                     gen.generate_on(&program)?;
                     let text_form_ir = std::str::from_utf8(&gen.writer()).unwrap().to_string();
                     println!("dump IR to file");
                     output_file.write_all(text_form_ir.as_bytes())?;
                 },
-                "riscv" => {
+                "-riscv" | "-perf" => {
 
                     let mut gen = KoopaGenerator::new(Vec::new());
                     gen.generate_on(&program)?;

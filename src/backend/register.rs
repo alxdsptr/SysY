@@ -105,7 +105,7 @@ fn need_register_allocation(val: &ValueData) -> Result<bool, String> {
         ValueKind::Load(_) => Ok(true),
         ValueKind::GetElemPtr(_) => Ok(true),
         ValueKind::GetPtr(_) => Ok(true),
-        ValueKind::Integer(_) => Ok(true),
+        ValueKind::Integer(_) => Ok(false),
         ValueKind::Call(_) => Ok(true),
         _ => Err(format!("Unexpected value kind: {:?}", val.kind())),
     }
@@ -254,7 +254,13 @@ pub fn get_register_map(program: &Program, func: Function) -> (HashMap<Value, Re
                 let val = vals[i];
                 let next= vals[i + 1];
                 let next_val = program.func(func).dfg().value(next);
-                let mut active = active_val.get(&next).unwrap().clone();
+                let mut active = match active_val.get(&next) {
+                    Some(active) => active.clone(),
+                    None => {
+                        active_val.insert(next, HashSet::new());
+                        HashSet::new()
+                    }
+                };
                 let used = get_referenced_value(&next_val);
                 for used_val in used {
                     let used_val_data = program.func(func).dfg().value(used_val);
@@ -264,7 +270,7 @@ pub fn get_register_map(program: &Program, func: Function) -> (HashMap<Value, Re
                     }
                 }
                 active.remove(&val);
-                active_val.insert(next, active);
+                active_val.insert(val, active);
             }
         }
     }
@@ -276,11 +282,16 @@ pub fn get_register_map(program: &Program, func: Function) -> (HashMap<Value, Re
         let vals = bb_node.insts().keys().cloned().collect::<Vec<_>>();
         for val in vals {
             let val_data = program.func(func).dfg().value(val);
-            if !need_register_allocation(val_data).unwrap() {
-                continue;
-            }
+            match need_register_allocation(val_data) {
+                Ok(false) => continue,
+                Ok(true) => {},
+                Err(_) => continue
+            };
             weight.insert(val, 0);
             let active = active_val.get(&val).unwrap();
+            if active.is_empty() {
+                continue;
+            }
             for con_val in active {
                 conflicts.entry(*con_val).or_default().push(val);
                 conflicts.entry(val).or_default().push(*con_val);
@@ -323,6 +334,6 @@ pub fn get_register_map(program: &Program, func: Function) -> (HashMap<Value, Re
         }
 
     }
-    (reg_map, max_reg)
+    (reg_map, max_reg + 1)
 }
 
