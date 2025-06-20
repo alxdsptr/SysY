@@ -131,10 +131,10 @@ fn get_init_vals_helper(env: &mut Environment, dim: &[i32], inits: Rc<RefCell<Ve
         match init {
             InitVal::Exp(exp) => {
                 let value = if is_const {
-                    exp.generate_ir(env)?
-                } else {
                     let res = exp.eval_const(env)?;
                     env.add_integer(res)
+                } else {
+                    exp.generate_ir(env)?
                 };
                 res.push(value);
             },
@@ -215,7 +215,7 @@ impl IRGen for VarDecl {
                                     env.add_store(value, pos);
                                 },
                                 InitVal::Array(inits) => {
-                                    let res = get_init_vals(env, &raw_dim, inits.clone(), true)?;
+                                    let res = get_init_vals(env, &raw_dim, inits.clone(), false)?;
                                     for i in 0..total {
                                         let temp = env.add_integer(i as i32);
                                         let ptr = env.add_getelemptr(pos, temp);

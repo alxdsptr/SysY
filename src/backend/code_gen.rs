@@ -31,7 +31,10 @@ impl CodeGen for Program {
                             env.output.write_all(format!("  .word {}\n", num).as_bytes()).unwrap();
                         },
                         ValueKind::ZeroInit(_) => {
-                            let size = value_data.ty().size();
+                            let size = match value_data.ty().kind() {
+                                TypeKind::Pointer(ptr) => ptr.size(),
+                                _ => unreachable!()
+                            };
                             env.output.write_all(format!("  .zero {}\n", size).as_bytes()).unwrap();
                         },
                         ValueKind::Aggregate(aggregate) => {
