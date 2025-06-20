@@ -79,11 +79,23 @@ impl Environment<'_> {
         }
         None
     }
+    pub fn get_pos_(&mut self, value: Value, temp_reg: &str) -> Option<(String, usize)> {
+        if let Some(reg) = self.register_map.get(&value) {
+            return Some((to_string(*reg), 0));
+        }
+        if let Some(pos) = self.var_pos.get(&value) {
+            return Some(("sp".to_string(), *pos));
+        }
+        if let Some(name) = self.global_var.get(&value) {
+            self.output.write_all(format!("la {}, {}\n", temp_reg, name).as_bytes()).unwrap();
+            return Some((temp_reg.to_string(), 0));
+        }
+        None
+    }
 
     pub fn get_pos(&mut self, value: Value, temp_reg: &str) -> Option<String> {
         if let Some(reg) = self.register_map.get(&value) {
-
-            return Some(format!("0({})", reg.to_string()));
+            return Some(format!("0({})", to_string(*reg)));
         }
         if let Some(pos) = self.var_pos.get(&value) {
             return Some(format!("{}(sp)", pos));
@@ -96,15 +108,3 @@ impl Environment<'_> {
     }
 
 }
-
-/*
-pub struct SymbolTable {
-    pub symbols: HashMap<Value, SymbolTableEntry>,
-}
-
-#[derive(Debug, Clone)]
-pub enum SymbolTableEntry {
-    Register(Register),
-    Stack(usize),
-    Global(String),
-}*/

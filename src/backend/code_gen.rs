@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::fmt::format;
 use std::io::Write;
 use koopa::ir::{BasicBlock, FunctionData, Program, TypeKind, Value};
 use koopa::ir::ValueKind;
@@ -68,8 +69,13 @@ fn compute_stack_size(func: &FunctionData, env: &mut Environment) -> usize {
         for (inst, _) in bb.insts() {
             let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*inst);
             match value_data.kind() {
-                ValueKind::Alloc(alloc) => {
-                    let size = value_data.ty().size();
+                ValueKind::Alloc(_) => {
+                    let size = match value_data.ty().kind() {
+                        TypeKind::Pointer(ptr) => {
+                            ptr.size()
+                        },
+                        _ => unreachable!()
+                    };
                     stack_size += size;
                 },
                 ValueKind::Call(call) => {
@@ -95,6 +101,13 @@ fn compute_stack_size(func: &FunctionData, env: &mut Environment) -> usize {
     stack_size = (stack_size + 15) & (!0xF);
     stack_size
 }
+fn get_addi(rd: &str, rs: &str, imm: i32, temp: &str) -> String {
+    if imm > 2047 || imm < -2048 {
+        format!("  li {}, {}\n  add {}, {}, {}\n", temp, imm, rd, rs, temp)
+    } else {
+        format!("  addi {}, {}, {}\n", rd, rs, imm)
+    }
+}
 impl CodeGen for FunctionData {
     fn code_gen(&self, env: &mut Environment) {
         if self.layout().entry_bb().is_none() {
@@ -113,7 +126,7 @@ impl CodeGen for FunctionData {
         }
 
         let stack_size = compute_stack_size(self, env);
-        env.output.write_all(format!("  addi sp, sp, -{}\n", stack_size).as_bytes()).unwrap();
+        env.output.write_all(get_addi("sp", "sp", -(stack_size as i32), "a6").as_bytes()).unwrap();
         env.stack_size = stack_size;
         env.cur_pos = (8 + min(12, env.max_reg_num) * 4) as usize; // 8 for ra and sp, 4 for each register
         let entry_bb = self.layout().entry_bb().unwrap();
@@ -200,15 +213,35 @@ impl CodeGen for Value{
                 format!("  j {}\n", target_name)
             }
             ValueKind::Alloc(_) => {
-                let size = value_data.ty().size();
+                let size = match value_data.ty().kind() {
+                    TypeKind::Pointer(ptr) => {
+                        ptr.size()
+                    },
+                    _ => unreachable!()
+                };
                 env.cur_pos += size;
                 env.insert_stack_variable(*self, env.stack_size - env.cur_pos);
                 String::new()
             },
             ValueKind::Store(store) => {
-                let src = to_string(env.get_reg_with_load(store.value(), A6).unwrap());
-                let dst = env.get_pos(store.dest(), "a6").unwrap();
-                format!("  sw {}, {}\n", src, dst)
+                let val = env.program.func(env.cur_func.unwrap()).dfg().value(store.value());
+                if let ValueKind::Aggregate(agg) = val.kind() {
+                    let (base, off) = env.get_pos_(store.dest(), "a6").unwrap();
+                    for (i, value) in agg.elems().iter().enumerate() {
+                        let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*value);
+                        let num = match value_data.kind() {
+                            ValueKind::Integer(num) => num.value(),
+                            _ => unreachable!()
+                        };
+                        let offset = off + i * 4;
+                        env.output.write_all(format!("  li a7, {}\n  sw a7, {}({})\n", num, offset, base).as_bytes()).unwrap();
+                    }
+                    String::new()
+                } else {
+                    let src = to_string(env.get_reg_with_load(store.value(), A6).unwrap());
+                    let dst = env.get_pos(store.dest(), "a7").unwrap();
+                    format!("  sw {}, {}\n", src, dst)
+                }
             }
             ValueKind::Load(load) => {
                 let rd = to_string(env.get_register(*self).unwrap());
@@ -224,30 +257,30 @@ impl CodeGen for Value{
                 match index_data.kind() {
                     ValueKind::Integer(num) => {
                         let offset = num.value() as usize * 4 + off;
-                        format!("  lw {}, {}({})\n", rd, offset, base_reg)
+                        get_addi(rd.as_str(), base_reg.as_str(), offset as i32, "a7")
                     }
                     _ => {
                         let offset = to_string(env.get_reg_with_load(index, A7).unwrap());
-                        format!("  li a7, 2\n  sll a7, {}, a7\n\
-                          addi {}, {}, a7\n", offset, rd, base_reg)
+                        let temp = format!("  li a7, 2\n  sll a7, {}, a7\n  add {}, {}, a7\n", offset, rd, base_reg);
+                        let addi = get_addi(rd.as_str(), rd.as_str(), off as i32, "a6");
+                        temp + addi.as_str()
                     }
                 }
             }
             ValueKind::GetPtr(ptr) => {
                 let rd = to_string(env.get_register(*self).unwrap());
-                let base_reg = env.get_register(ptr.src()).unwrap();
+                let base_reg = to_string(env.get_register(ptr.src()).unwrap());
                 // assert_eq!(value_data.ty().size(), 4);
                 let index = ptr.index();
                 let index_data = env.program.func(env.cur_func.unwrap()).dfg().value(index);
                 match index_data.kind() {
                     ValueKind::Integer(num) => {
                         let offset = num.value() as usize * 4;
-                        format!("  lw {}, {}({})\n", rd, offset, base_reg)
+                        get_addi(rd.as_str(), base_reg.as_str(), offset as i32, "a7")
                     }
                     _ => {
                         let offset = to_string(env.get_reg_with_load(index, A7).unwrap());
-                        format!("  li a7, 2\n  sll a7, {}, a7\n\
-                          addi {}, {}, a7\n", offset, rd, base_reg)
+                        format!("  li a7, 2\n  sll a7, {}, a7\n  add {}, {}, a7\n", offset, rd, base_reg)
                     }
                 }
             },
@@ -265,7 +298,7 @@ impl CodeGen for Value{
                     env.output.write_all(format!("  mv a0, {}\n", rs).as_bytes()).unwrap();
                 }
                 // restore sp and ra
-                env.output.write_all(format!("  addi sp, sp, {}\n", env.stack_size).as_bytes()).unwrap();
+                env.output.write_all(get_addi("sp", "sp", env.stack_size as i32, "a7").as_bytes()).unwrap();
 
                 for i in 0..min(12, env.max_reg_num) {
                     let reg = to_string(i);
