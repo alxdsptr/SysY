@@ -1,13 +1,10 @@
 use std::cmp::min;
-use std::fmt::format;
-use std::fs::{create_dir_all, metadata, File};
 use std::io::Write;
-use koopa::ir::{BasicBlock, Function, FunctionData, Program, Value};
-use koopa::ir::entities::ValueData;
+use koopa::ir::{BasicBlock, FunctionData, Program, TypeKind, Value};
 use koopa::ir::ValueKind;
 use koopa::ir::BinaryOp;
 use crate::backend::environment::Environment;
-use crate::backend::register::{to_string, A6, A7};
+use crate::backend::register::{to_string, Register, A0, A6, A7};
 
 pub trait CodeGen {
     fn code_gen(&self, env: &mut Environment);
@@ -18,6 +15,7 @@ impl CodeGen for Program {
         // data section
         env.output.write_all("  .data\n".as_bytes()).unwrap();
         for &val in self.inst_layout() {
+            env.global_symbol.insert(val);
             let value_data = self.borrow_value(val);
             match value_data.kind() {
                 ValueKind::GlobalAlloc(alloc) => {
@@ -131,7 +129,7 @@ impl CodeGen for FunctionData {
             let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*inst);
             assert!(matches!(value_data.kind(), ValueKind::Alloc(_)));
             let offset = if i < 8 {
-                env.cur_pos -= 4;
+                env.cur_pos += 4;
                 env.stack_size - env.cur_pos
             } else {
                 env.stack_size + 4 * (i - 8)
@@ -146,6 +144,7 @@ impl CodeGen for FunctionData {
                 // argument in ai register, store in pos offset(sp)
                 env.output.write_all(format!("  sw a{}, {}(sp)\n", i, offset).as_bytes()).unwrap();
             }
+            cursor.move_next();
         }
         while let Some(inst) = cursor.key() {
             inst.code_gen(env);
@@ -169,7 +168,6 @@ impl CodeGen for BasicBlock {
         }
     }
 }
-
 impl CodeGen for Value{
     fn code_gen(&self, env: &mut Environment) {
         let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*self);
@@ -268,13 +266,13 @@ impl CodeGen for Value{
                 }
                 // restore sp and ra
                 env.output.write_all(format!("  addi sp, sp, {}\n", env.stack_size).as_bytes()).unwrap();
-                env.output.write_all("  lw ra, -4(sp)\n".as_bytes()).unwrap();
-                env.output.write_all("  lw sp, -8(sp)\n".as_bytes()).unwrap();
 
                 for i in 0..min(12, env.max_reg_num) {
                     let reg = to_string(i);
                     env.output.write_all(format!("  lw {}, -{}(sp)\n", reg, 12 + i * 4).as_bytes()).unwrap();
                 }
+                env.output.write_all("  lw ra, -4(sp)\n".as_bytes()).unwrap();
+                env.output.write_all("  lw sp, -8(sp)\n".as_bytes()).unwrap();
                 env.output.write_all("  ret\n".as_bytes()).unwrap();
                 return;
             },
@@ -291,27 +289,31 @@ impl CodeGen for Value{
 
                 let callee_data = env.program.func(call.callee());
                 let func_name = &callee_data.name()[1..];
-                let mut args = Vec::new();
-                for arg in call.args() {
-                    let reg = env.get_reg_with_load(*arg, A6).unwrap();
-                    args.push(to_string(reg));
-                }
-                for (i, arg) in args.iter().enumerate().skip(8) {
-                    if i > 8 {
-                        let offset = 4 * (i - 8);
-                        env.output.write_all(format!("  sw {}, {}(sp)\n", arg, offset).as_bytes()).unwrap();
+                for (i, arg) in call.args().iter().enumerate().rev() {
+                    if i < 8 {
+                        let temp = A0 + i as Register;
+                        let reg = to_string(env.get_reg_with_load(*arg, temp).unwrap());
+                        if reg != to_string(temp) {
+                            env.output.write_all(format!("  mv {}, {}\n", to_string(temp), reg).as_bytes()).unwrap();
+                        }
                     } else {
-                        // move args to a0-a7
-                        env.output.write_all(format!("  mv a{}, {}\n", i, arg).as_bytes()).unwrap();
+                        let reg = to_string(env.get_reg_with_load(*arg, A6).unwrap());
+                        let offset = 4 * (i - 8);
+                        env.output.write_all(format!("  sw {}, {}(sp)\n", reg, offset).as_bytes()).unwrap();
                     }
                 }
                 env.output.write_all(format!("  call {}\n", func_name).as_bytes()).unwrap();
 
                 let return_type = callee_data.ty();
-                if return_type.is_i32() {
-                    let rd = to_string(env.get_register(*self).unwrap());
-                    env.output.write_all(format!("  mv {}, a0\n", rd).as_bytes()).unwrap();
-                }
+                match return_type.kind() {
+                    TypeKind::Function(_, ret) => {
+                        if ret.is_i32() {
+                            let rd = to_string(env.get_register(*self).unwrap());
+                            env.output.write_all(format!("  mv {}, a0\n", rd).as_bytes()).unwrap();
+                        }
+                    }
+                    _ => {unreachable!()}
+                };
 
                 if env.max_reg_num > 12 {
                     for i in 12..env.max_reg_num {

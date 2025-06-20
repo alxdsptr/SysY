@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use koopa::ir::{Function, Program, Value, ValueKind};
-use crate::backend::register::{from_string, get_register_map, to_string, Register};
+use crate::backend::register::{get_register_map, to_string, Register};
 
 pub struct Environment<'a> {
     pub program: &'a Program,
     register_map: HashMap<Value, Register>,
     var_pos: HashMap<Value, usize>,
     global_var: HashMap<Value, String>,
+    pub global_symbol: HashSet<Value>,
     pub output: &'a mut File,
     pub cur_func: Option<Function>,
     pub cur_pos: usize,
@@ -27,6 +28,7 @@ impl Environment<'_> {
             register_map: HashMap::new(),
             var_pos: HashMap::new(),
             global_var: HashMap::new(),
+            global_symbol: HashSet::new(),
             output,
             cur_func: None,
             cur_pos: 0,
@@ -37,7 +39,7 @@ impl Environment<'_> {
     pub fn enter_new_func(&mut self, func: Function) {
         self.cur_func = Some(func);
         self.var_pos.clear();
-        let (register_map, max_reg_num) = get_register_map(self.program, func);
+        let (register_map, max_reg_num) = get_register_map(self, self.program, func);
         self.register_map = register_map;
         self.max_reg_num = max_reg_num;
     }

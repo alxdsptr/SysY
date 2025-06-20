@@ -54,5 +54,48 @@ impl ModulePass for DeadCodeElimination {
             }
 
         }
+
+        for func in program.funcs_mut().values_mut() {
+            if func.layout().entry_bb().is_none() {
+                continue;
+            }
+            let mut arrivable = HashSet::new();
+            let entry_bb = func.layout_mut().entry_bb().unwrap();
+            arrivable.insert(entry_bb);
+            let mut stack = vec![entry_bb];
+            while let Some(bb) = stack.pop() {
+                let bb_node = func.layout().bbs().node(&bb).unwrap();
+                let end = bb_node.insts().back_key().unwrap();
+                let end = func.dfg().value(*end);
+                match end.kind() {
+                    ValueKind::Branch(branch) => {
+                        let tr = branch.true_bb();
+                        let fa = branch.false_bb();
+                        if arrivable.insert(tr) {
+                            stack.push(tr);
+                        }
+                        if arrivable.insert(fa) {
+                            stack.push(fa);
+                        }
+                    }
+                    ValueKind::Jump(jump) => {
+                        let target = jump.target();
+                        if arrivable.insert(target) {
+                            stack.push(target);
+                        }
+                    }
+                    _ => {}
+                };
+            }
+
+            let mut bb_cursor = func.layout_mut().bbs_mut().cursor_front_mut();
+            while let Some(bb) = bb_cursor.key() {
+                if !arrivable.contains(bb) {
+                    bb_cursor.remove_current();
+                } else {
+                    bb_cursor.move_next();
+                }
+            }
+        }
     }
 }

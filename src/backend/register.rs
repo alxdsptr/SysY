@@ -2,6 +2,8 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use koopa::ir::{BasicBlock, Program, ValueKind, Function, Value};
 use koopa::ir::entities::ValueData;
+use crate::backend::environment::Environment;
+
 const FREE_REG: usize = 25;
 fn get_pred_and_end(program: &Program, func: Function) ->
                (HashMap<BasicBlock, Vec<BasicBlock>>, Vec<BasicBlock>) {
@@ -122,6 +124,7 @@ pub fn to_string(reg: Register) -> String {
         panic!("Register out of range: {}", reg);
     }
 }
+pub const A0: Register = 19;
 pub const A6: Register = 25;
 pub const A7: Register = 26;
 pub fn from_string(s: &str) -> Result<Register, String> {
@@ -200,7 +203,7 @@ fn alloc_register(
     }
     panic!("No free registers available for value: {:?}", val);
 }
-pub fn get_register_map(program: &Program, func: Function) -> (HashMap<Value, Register>, u32) {
+pub fn get_register_map(env: &Environment, program: &Program, func: Function) -> (HashMap<Value, Register>, u32) {
     let (pred, end_bb) = get_pred_and_end(program, func);
     let order = get_topo_order(&end_bb, &pred);
     let bbs = program.func(func).layout().bbs().keys().collect::<Vec<_>>();
@@ -263,8 +266,15 @@ pub fn get_register_map(program: &Program, func: Function) -> (HashMap<Value, Re
                 };
                 let used = get_referenced_value(&next_val);
                 for used_val in used {
+                    if env.global_symbol.contains(&used_val) {
+                        continue;
+                    }
                     let used_val_data = program.func(func).dfg().value(used_val);
-                    let store = need_register_allocation(used_val_data).unwrap();
+                    let store = match need_register_allocation(used_val_data) {
+                        Ok(true) => true,
+                        Ok(false) => false,
+                        Err(_) => false,
+                    };
                     if store {
                         active.insert(used_val);
                     }

@@ -470,8 +470,8 @@ impl IRGen for Exp {
             Exp::BinaryExp(op, lhs, rhs) => {
                 match op {
                     ast::BinaryOp::Lor => {
-                        let end_bb = env.create_block("lor_end");
                         let cond_bb = env.create_block("lor_cond");
+                        let end_bb = env.create_block("lor_end");
 
                         let result = env.add_alloc(Type::get_i32());
                         let lhs_val = lhs.generate_ir(env)?;
@@ -491,8 +491,8 @@ impl IRGen for Exp {
                         Ok(res)
                     },
                     ast::BinaryOp::Land => {
-                        let end_bb = env.create_block("land_end");
                         let cond_bb = env.create_block("land_cond");
+                        let end_bb = env.create_block("land_end");
 
                         let result = env.add_alloc(Type::get_i32());
                         let lhs_val = lhs.generate_ir(env)?;
