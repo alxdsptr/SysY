@@ -50,6 +50,27 @@ impl ModulePass for DeadCodeElimination {
                         bb_node.insts_mut().push_key_back(ret_inst).unwrap();
                     }
 
+                } /*else {
+                    let mut delete_bb = HashSet::new();
+                    for bb in bb_list {
+                        delete_bb.insert(bb);
+                    }
+                    let mut cursor = func.layout_mut().bbs_mut().cursor_front_mut();
+                    while let Some(bb) = cursor.key() {
+                        if delete_bb.contains(bb) {
+                            cursor.remove_current().unwrap();
+                        } else {
+                            cursor.move_next();
+                        }
+                    }
+                }*/
+                else {
+                    for bb in bb_list {
+                        let zero = func.dfg_mut().new_value().integer(0);
+                        let ret_inst = func.dfg_mut().new_value().ret(Some(zero));
+                        let bb_node = func.layout_mut().bbs_mut().node_mut(&bb).unwrap();
+                        bb_node.insts_mut().push_key_back(ret_inst).unwrap();
+                    }
                 }
             }
 

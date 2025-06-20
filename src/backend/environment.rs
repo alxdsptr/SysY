@@ -52,6 +52,24 @@ impl Environment<'_> {
     pub fn get_register(&self, value: Value) -> Option<Register> {
         self.register_map.get(&value).cloned()
     }
+    pub fn get_offset(&mut self, base: &str, offset: i32, temp: &str) -> String {
+        if offset > 2047 || offset < -2048 {
+            self.output.write_all(format!("  li {}, {}\n", temp, offset).as_bytes()).unwrap();
+            self.output.write_all(format!("  add {}, {}, {}\n", temp, base, temp).as_bytes()).unwrap();
+            format!("0({})", temp)
+        } else {
+            format!("{}({})", offset, base)
+        }
+    }
+    pub fn get_offset_inplace(&mut self, base: &str, offset: i32, temp: &str) -> String {
+        if offset > 2047 || offset < -2048 {
+            self.output.write_all(format!("  li {}, {}\n", temp, offset).as_bytes()).unwrap();
+            self.output.write_all(format!("  add {}, {}, {}\n", base, base, temp).as_bytes()).unwrap();
+            format!("0({})", base)
+        } else {
+            format!("{}({})", offset, base)
+        }
+    }
     pub fn get_reg_with_load(&mut self, value: Value, temp_reg: Register) -> Option<Register> {
         let value_data = self.program.func(self.cur_func.unwrap()).dfg().value(value);
         if let ValueKind::Integer(integer) = value_data.kind() {
@@ -98,7 +116,8 @@ impl Environment<'_> {
             return Some(format!("0({})", to_string(*reg)));
         }
         if let Some(pos) = self.var_pos.get(&value) {
-            return Some(format!("{}(sp)", pos));
+            let temp = self.get_offset("sp", *pos as i32, temp_reg);
+            return Some(format!("{}", temp));
         }
         if let Some(name) = self.global_var.get(&value) {
             self.output.write_all(format!("la {}, {}\n", temp_reg, name).as_bytes()).unwrap();

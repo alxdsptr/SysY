@@ -1,6 +1,7 @@
 use std::cmp::min;
 use std::fmt::format;
 use std::io::Write;
+use std::sync::atomic::AtomicUsize;
 use koopa::ir::{BasicBlock, FunctionData, Program, TypeKind, Value};
 use koopa::ir::ValueKind;
 use koopa::ir::BinaryOp;
@@ -158,7 +159,8 @@ impl CodeGen for FunctionData {
             assert!(matches!(value_data.kind(), ValueKind::Store(_)));
             if i < 8 {
                 // argument in ai register, store in pos offset(sp)
-                env.output.write_all(format!("  sw a{}, {}(sp)\n", i, offset).as_bytes()).unwrap();
+                let temp = env.get_offset("sp", offset as i32, "a6");
+                env.output.write_all(format!("  sw a{}, {}\n", i, temp).as_bytes()).unwrap();
             }
             cursor.move_next();
         }
@@ -237,7 +239,8 @@ impl CodeGen for Value{
                             _ => unreachable!()
                         };
                         let offset = off + i * 4;
-                        env.output.write_all(format!("  li a7, {}\n  sw a7, {}({})\n", num, offset, base).as_bytes()).unwrap();
+                        let temp = env.get_offset(base.as_str(), offset as i32, "a7");
+                        env.output.write_all(format!("  li a7, {}\n  sw a7, {}\n", num, temp).as_bytes()).unwrap();
                     }
                     String::new()
                 } else {
@@ -293,7 +296,9 @@ impl CodeGen for Value{
                 let false_bb = branch.false_bb();
                 let true_name = &env.program.func(env.cur_func.unwrap()).dfg().bb(true_bb).name().as_ref().unwrap()[1..];
                 let false_name = &env.program.func(env.cur_func.unwrap()).dfg().bb(false_bb).name().as_ref().unwrap()[1..];
-                format!("  bnez {}, {}\n  j {}\n", cond, true_name, false_name)
+                static BRANCH_CNT: AtomicUsize = AtomicUsize::new(0);
+                let cnt = BRANCH_CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                format!("  bnez {}, skip_{}\n  j {}\nskip_{}:\n  j {}\n", cond, cnt, false_name, cnt, true_name)
             }
             ValueKind::Return(ret) => {
                 if let Some(value) = ret.value() {
@@ -319,7 +324,8 @@ impl CodeGen for Value{
                         // let offset = env.stack_size - env.cur_pos - 4 * (i - 12);
                         env.cur_pos += 4;
                         let offset = env.stack_size - env.cur_pos;
-                        env.output.write_all(format!("  sw {}, {}(sp)\n", reg, offset).as_bytes()).unwrap();
+                        let temp = env.get_offset("sp", offset as i32, "a6");
+                        env.output.write_all(format!("  sw {}, {}\n", reg, temp).as_bytes()).unwrap();
                     }
                 }
 
@@ -335,7 +341,8 @@ impl CodeGen for Value{
                     } else {
                         let reg = to_string(env.get_reg_with_load(*arg, A6).unwrap());
                         let offset = 4 * (i - 8);
-                        env.output.write_all(format!("  sw {}, {}(sp)\n", reg, offset).as_bytes()).unwrap();
+                        let temp = env.get_offset("sp", offset as i32, "a7");
+                        env.output.write_all(format!("  sw {}, {}\n", reg, temp).as_bytes()).unwrap();
                     }
                 }
                 env.output.write_all(format!("  call {}\n", func_name).as_bytes()).unwrap();
@@ -356,7 +363,8 @@ impl CodeGen for Value{
                         let reg = to_string(i);
                         let offset = env.stack_size - env.cur_pos;
                         env.cur_pos -= 4;
-                        env.output.write_all(format!("  lw {}, {}(sp)\n", reg, offset).as_bytes()).unwrap();
+                        let temp = env.get_offset("sp", offset as i32, "a6");
+                        env.output.write_all(format!("  lw {}, {}\n", reg, temp).as_bytes()).unwrap();
                     }
                 }
                 String::new()
