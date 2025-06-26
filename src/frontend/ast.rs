@@ -45,12 +45,12 @@ impl FuncDef {
             match self.params[i].array_size.as_ref() {
                 Some(arr) => {
                     let (array_size, _) = convert_dim(env, arr)?;
-                    let pos = env.add_alloc(self.params[i].to_type());
+                    let pos = env.add_alloc(self.params[i].to_type(), name.as_str());
                     env.add_store(val, pos);
                     env.sym_table.borrow_mut().insert_array_ptr(name, pos, array_size.into())?;
                 },
                 None => {
-                    let pos = env.add_alloc(self.params[i].to_type());
+                    let pos = env.add_alloc(self.params[i].to_type(), name.as_str());
                     env.add_store(val, pos);
                     env.sym_table.borrow_mut().insert_var(name, pos)?;
                 }

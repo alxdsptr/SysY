@@ -72,9 +72,10 @@ impl Environment<'_> {
             .unwrap();
         res
     }
-    pub fn add_alloc(&mut self, ty: koopa::ir::Type) -> Value {
+    pub fn add_alloc(&mut self, ty: koopa::ir::Type, name: &str) -> Value {
         let func_data = self.program.func_mut(self.cur_func.unwrap());
         let res = func_data.dfg_mut().new_value().alloc(ty);
+        func_data.dfg_mut().set_value_name(res, Some("@".to_string() + name));
         func_data.layout_mut().bb_mut(self.cur_bb.unwrap().clone())
             .insts_mut()
             .push_key_back(res)

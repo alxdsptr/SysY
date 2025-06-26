@@ -179,7 +179,7 @@ impl IRGen for VarDecl {
                             env.add_global_alloc(init, ident.clone())
                         },
                         false => {
-                            env.add_alloc(ty)
+                            env.add_alloc(ty, ident)
                         },
                     };
                     match array_dim.is_empty() {
@@ -208,7 +208,7 @@ impl IRGen for VarDecl {
                                 true => self.btype.to_type(),
                                 false => Type::get_array(self.btype.to_type(), total)
                             };
-                            let pos = env.add_alloc(ty);
+                            let pos = env.add_alloc(ty, ident);
                             match exp.as_ref() {
                                 InitVal::Exp(exp) => {
                                     let value = exp.generate_ir(env)?;
@@ -256,7 +256,7 @@ impl IRGen for ConstDecl {
                         },
                         false => {
                             let ty = Type::get_array(self.btype.to_type(), total);
-                            let pos = env.add_alloc(ty);
+                            let pos = env.add_alloc(ty, &*const_def.ident);
                             env.add_store(init, pos);
                             pos
                         },
@@ -473,7 +473,8 @@ impl IRGen for Exp {
                         let cond_bb = env.create_block("lor_cond");
                         let end_bb = env.create_block("lor_end");
 
-                        let result = env.add_alloc(Type::get_i32());
+                        let temp_name = env.label_gen.borrow_mut().get_var_name("lor_temp");
+                        let result = env.add_alloc(Type::get_i32(), temp_name.as_str());
                         let lhs_val = lhs.generate_ir(env)?;
                         let zero = env.add_integer(0);
                         let lhs_res = env.add_binary_inst(ir::BinaryOp::NotEq, lhs_val, zero);
@@ -494,7 +495,8 @@ impl IRGen for Exp {
                         let cond_bb = env.create_block("land_cond");
                         let end_bb = env.create_block("land_end");
 
-                        let result = env.add_alloc(Type::get_i32());
+                        let temp_name = env.label_gen.borrow_mut().get_var_name("land_temp");
+                        let result = env.add_alloc(Type::get_i32(), temp_name.as_str());
                         let lhs_val = lhs.generate_ir(env)?;
                         let zero = env.add_integer(0);
                         let lhs_res = env.add_binary_inst(ir::BinaryOp::NotEq, lhs_val, zero);

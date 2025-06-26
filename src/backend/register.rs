@@ -5,7 +5,7 @@ use koopa::ir::entities::ValueData;
 use crate::backend::environment::Environment;
 
 const FREE_REG: usize = 25;
-fn get_pred_and_end(program: &Program, func: Function) ->
+pub fn get_pred_and_end(program: &Program, func: Function) ->
                (HashMap<BasicBlock, Vec<BasicBlock>>, Vec<BasicBlock>) {
     let func_data = program.func(func);
     let bbs = func_data.layout().bbs().keys().cloned().collect::<Vec<_>>();
@@ -36,7 +36,7 @@ fn get_pred_and_end(program: &Program, func: Function) ->
     }
     (pred, end_bb)
 }
-fn get_topo_order(
+pub fn get_topo_order(
     end_bb: &Vec<BasicBlock>,
     pred: &HashMap<BasicBlock, Vec<BasicBlock>>,
 ) -> Vec<BasicBlock> {

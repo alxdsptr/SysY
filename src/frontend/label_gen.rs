@@ -16,4 +16,10 @@ impl LabelGenerator {
         *count += 1;
         format!("%{}_{}", name, count)
     }
+
+    pub fn get_var_name(&mut self, name: &str) -> String {
+        let count = self.label_map.entry(name.to_string()).or_insert(0);
+        *count += 1;
+        format!("{}_{}", name, count)
+    }
 }

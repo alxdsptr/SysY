@@ -1,6 +1,6 @@
 pub mod environment;
 pub mod code_gen;
-mod register;
+pub(crate) mod register;
 
 use std::fs::File;
 use koopa::ir::Program;
