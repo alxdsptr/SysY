@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use koopa::ir::{BasicBlock, FunctionData, Type, TypeKind, Value};
-use koopa::ir::builder::BasicBlockBuilder;
+use koopa::ir::builder::{BasicBlockBuilder, LocalInstBuilder};
+use koopa::ir::entities::ValueData;
 use koopa::opt::ModulePass;
 use koopa::ir::ValueKind;
 use koopa::ir::values::BlockArgRef;
@@ -43,38 +44,154 @@ impl Environment {
     }
 }
 
-fn process_bb(
-    bb: BasicBlock,
-    func_data: &mut FunctionData,
-    pred: &HashMap<BasicBlock, Vec<BasicBlock>>,
+fn process_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<Value, Value>,
+                new_insts: &mut Vec<Value>, get_new_bb_target: &dyn Fn(BasicBlock, &[Value], &Environment, &mut bool) -> (BasicBlock, Vec<Value>),
+                env: &Environment, first: bool
 ) {
-    // let temp = func_data.layout_mut().bb_mut(bb);
-    let temp = func_data.dfg_mut().bb_mut(bb);
-    let pred = temp.used_by();
+    let value_data = func_data.dfg().value(val).clone();
+    let get_new_val = |val: Value, changed: &mut bool| {
+        match val_map.get(&val) {
+            Some(v) => {
+                *changed = true;
+                *v
+            }
+            None => val
+        }
+    };
+    match value_data.kind() {
+        ValueKind::Store(_) | ValueKind::Load(_) => {
+            if !first {
+                new_insts.push(val);
+            }
+        },
+        ValueKind::Binary(binary) => {
+            let mut changed = false;
+            let new_lhs = get_new_val(binary.lhs(), &mut changed);
+            let new_rhs = get_new_val(binary.rhs(), &mut changed);
+            if changed {
+                let new_val = func_data.dfg_mut().new_value().binary(binary.op(), new_lhs, new_rhs);
+                val_map.insert(val, new_val);
+                new_insts.push(new_val);
+            } else {
+                new_insts.push(val);
+            }
+        },
+        ValueKind::GetElemPtr(ptr) => {
+            let mut changed = false;
+            let new_src = get_new_val(ptr.src(), &mut changed);
+            let new_index = get_new_val(ptr.index(), &mut changed);
+            if changed {
+                let new_val = func_data.dfg_mut().new_value().get_elem_ptr(new_src, new_index);
+                val_map.insert(val, new_val);
+                new_insts.push(new_val);
+            } else {
+                new_insts.push(val);
+            }
+        },
+        ValueKind::GetPtr(ptr) => {
+            let mut changed = false;
+            let new_src = get_new_val(ptr.src(), &mut changed);
+            let new_index = get_new_val(ptr.index(), &mut changed);
+            if changed {
+                let new_val = func_data.dfg_mut().new_value().get_ptr(new_src, new_index);
+                val_map.insert(val, new_val);
+                new_insts.push(new_val);
+            } else {
+                new_insts.push(val);
+            }
+        },
+        ValueKind::Call(call) => {
+            let mut changed = false;
+            let new_args = call.args().iter().map(|arg| {
+                get_new_val(*arg, &mut changed)
+            }).collect::<Vec<_>>();
+            if changed {
+                let new_val = func_data.dfg_mut().new_value().call(call.callee(), new_args);
+                val_map.insert(val, new_val);
+                new_insts.push(new_val);
+            } else {
+                new_insts.push(val);
+            }
+        },
+        ValueKind::Return(ret) => {
+            let mut changed = false;
+            if let Some(ret_val) = ret.value() {
+                let new_val = get_new_val(ret_val, &mut changed);
+                if changed {
+                    let new_ret = func_data.dfg_mut().new_value().ret(Some(new_val));
+                    new_insts.push(new_ret);
+                } else {
+                    new_insts.push(val);
+                }
+            } else {
+                new_insts.push(val);
+            }
+        },
+        ValueKind::Branch(branch) => {
+            let mut changed = false;
+            let new_cond = get_new_val(branch.cond(), &mut false);
+            let (new_true_bb, true_args) = get_new_bb_target(branch.true_bb(), branch.true_args(), env, &mut changed);
+            let (new_false_bb, false_args) = get_new_bb_target(branch.false_bb(), branch.false_args(), env, &mut changed);
+
+            if changed {
+                let new_branch = func_data.dfg_mut().new_value().branch_with_args(new_cond,
+                                                                                  new_true_bb, new_false_bb, true_args, false_args);
+                new_insts.push(new_branch);
+            } else {
+                new_insts.push(val);
+            }
+        },
+        ValueKind::Jump(jump) => {
+            let mut changed = false;
+            let (new_target, args) = get_new_bb_target(jump.target(), jump.args(), env, &mut changed);
+            if changed {
+                let new_jump = func_data.dfg_mut().new_value().jump_with_args(new_target, args);
+                new_insts.push(new_jump);
+            } else {
+                new_insts.push(val);
+            }
+        },
+        _ => {
+            new_insts.push(val);
+        }
+    }
+}
+fn delete_bbs(func_data: &mut FunctionData, delete_bb: &HashSet<BasicBlock>) {
+    let mut bb_cursor = func_data.layout_mut().bbs_mut().cursor_front_mut();
+    while let Some(bb) = bb_cursor.key() {
+        if delete_bb.contains(bb) {
+            bb_cursor.remove_current();
+        } else {
+            bb_cursor.move_next();
+        }
+    }
 }
 impl ModulePass for ToSSA {
     fn run_on(&mut self, program: &mut koopa::ir::Program) {
         let functions = program.funcs().keys().cloned().collect::<Vec<_>>();
         for func in functions {
-            let func_data = program.func_mut(func);
-            let bbs = func_data.layout().bbs().keys().cloned().collect::<Vec<_>>();
+            // let func_data = program.func_mut(func);
+            let bbs = program.func(func).layout().bbs().keys().cloned().collect::<Vec<_>>();
             let mut val_to_name: HashMap<Value, String> = HashMap::new();
-            let mut name_to_val:HashMap<String, (Value, Type)> = HashMap::new();
+            let mut name_to_val: HashMap<String, (Value, Type)> = HashMap::new();
+            // 到达某个基本块时分配的所有变量
             let mut allocated_variables: HashMap<BasicBlock, HashSet<String>> = HashMap::new();
+            // 某个基本块内部自己分配的变量
             let mut self_allocated: HashMap<BasicBlock, HashSet<String>> = HashMap::new();
             let mut alloc_inst = HashSet::new();
             for bb in &bbs {
-                let bb_node = func_data.layout().bbs().node(bb).unwrap();
-                for val in bb_node.insts().keys() {
-                    let value_data = func_data.dfg().value(*val);
+                let vals = program.func(func).layout().bbs().node(bb).unwrap().insts().keys().cloned().collect::<Vec<_>>();
+                let end_val = program.func(func).layout().bbs().node(bb).unwrap().insts().back_key().unwrap();
+                for val in vals {
+                    let value_data = program.func(func).dfg().value(val);
                     match value_data.kind() {
                         ValueKind::Alloc(_) => {
                             match value_data.ty().kind() {
                                 TypeKind::Pointer(ptr) => {
                                     if TypeKind::Int32 == *ptr.kind() {
                                         let name = value_data.name().as_ref().unwrap().to_string();
-                                        val_to_name.insert(*val, name.clone());
-                                        name_to_val.insert(name.clone(), (*val, ptr.clone()));
+                                        val_to_name.insert(val, name.clone());
+                                        name_to_val.insert(name.clone(), (val, ptr.clone()));
                                         allocated_variables.entry(*bb).or_default().insert(name.clone());
                                         self_allocated.entry(*bb).or_default().insert(name);
                                         alloc_inst.insert(val);
@@ -86,8 +203,7 @@ impl ModulePass for ToSSA {
                         _ => {}
                     }
                 }
-                let end_val = bb_node.insts().back_key().unwrap();
-                let end_data = func_data.dfg().value(*end_val);
+                let end_data = program.func(func).dfg().value(*end_val);
                 let cur_vars = allocated_variables.entry(*bb).or_default().clone();
                 match end_data.kind() {
                     ValueKind::Jump(jump) => {
@@ -97,7 +213,7 @@ impl ModulePass for ToSSA {
                     ValueKind::Branch(branch) => {
                         let true_bb = branch.true_bb();
                         let false_bb = branch.false_bb();
-                        allocated_variables.entry(true_bb).or_default().extend(cur_vars.iter());
+                        allocated_variables.entry(true_bb).or_default().extend(cur_vars.clone());
                         allocated_variables.entry(false_bb).or_default().extend(cur_vars);
                     },
                     _ => {}
@@ -110,13 +226,19 @@ impl ModulePass for ToSSA {
             while changed {
                 changed = false;
                 for bb in order.iter() {
-                    let pred_bbs = pred.get(bb).unwrap();
+                    let pred_bbs = match pred.get(bb) {
+                        Some(pred) => pred,
+                        None => continue
+                    };
                     let old_size = match allocated_variables.get(bb) {
                         Some(vars) => vars.len(),
                         None => 0
                     };
                     for pred in pred_bbs.iter() {
-                        let pre_vars = allocated_variables.entry(*pred).or_default();
+                        let pre_vars = match allocated_variables.get(pred) {
+                            Some(pre_vars) => pre_vars.clone(),
+                            None => HashSet::new()
+                        };
                         allocated_variables.entry(*bb).or_default().extend(pre_vars);
                     }
                     let new_size = match allocated_variables.get(bb) {
@@ -129,56 +251,91 @@ impl ModulePass for ToSSA {
                 }
             }
 
+            // 从allocated_variables里删去self_allocated的变量
+            // 添加基本块参数的时候只添加在其他基本块里分配而这个基本块里可能用到的变量
             for bb in &bbs {
                 match allocated_variables.get_mut(bb) {
                     Some(all_vars) => {
-                        let self_vars = self_allocated.get(bb).unwrap_or(&HashSet::new());
-                        for var in self_vars {
-                            all_vars.remove(var);
+                        if let Some(self_vars) = self_allocated.get(bb) {
+                            for var in self_vars {
+                                all_vars.remove(var);
+                            }
                         }
                     }
                     None => continue
                 }
             }
-unsafe {
 
             let mut env = Environment::new();
             let mut delete_bb = HashSet::new();
+            let mut bb_map: HashMap<BasicBlock, BasicBlock> = HashMap::new();
             for bb in &bbs {
-                let bb_data = func_data.dfg_mut().bb_mut(*bb);
-                let name = bb_data.name();
+                let name = program.func(func).dfg().bb(*bb).name().clone();
                 let params = match allocated_variables.get(bb) {
-                    Some(vars) => vars,
-                    None => continue,
+                    Some(vars) => vars.clone(),
+                    None => HashSet::new(),
                 };
-                delete_bb.insert(bb);
-                let self_vars = self_allocated.get(bb).unwrap_or(&HashSet::new());
-                let mut index_map: HashMap<usize, Value> = HashMap::new();
-                for var in self_vars {
-                    let val = name_to_val.get(var).unwrap().0;
-                    env.insert_old(val, None);
-                }
+                delete_bb.insert(*bb);
                 let params = params.iter().enumerate().map(|(i, str)| {
                     let (val, ty) = name_to_val.get(str).unwrap();
-                    index_map.insert(i, *val);
                     ty.clone()
                 }).collect::<Vec<_>>();
-                let new_bb = func_data.dfg_mut().new_bb().basic_block_with_params(name.clone(), params);
-                func_data.layout_mut().bbs_mut().push_key_back(new_bb).unwrap();
-                let new_bb = func_data.dfg_mut().bb_mut(new_bb);
-                for (i, val) in new_bb.params().iter().enumerate() {
-                    env.insert_new(*index_map.get(&i).unwrap(), *val);
+                let new_bb = program.func_mut(func).dfg_mut().new_bb().basic_block_with_params(name, params);
+                program.func_mut(func).layout_mut().bbs_mut().push_key_back(new_bb).unwrap();
+                bb_map.insert(*bb, new_bb);
+            }
+
+            for bb in &bbs {
+                let params = match allocated_variables.get(bb) {
+                    Some(vars) => vars.clone(),
+                    None => HashSet::new(),
+                };
+                let mut index_map: HashMap<usize, Value> = HashMap::new();
+                if let Some(self_vars) = self_allocated.get(bb) {
+                    for var in self_vars {
+                        let val = name_to_val.get(var).unwrap().0;
+                        env.insert_old(val, None);
+                    }
+                }
+                for (i, str) in params.iter().enumerate() {
+                    let (val, _) = name_to_val.get(str).unwrap();
+                    index_map.insert(i, *val);
+                }
+                let new_bb = *bb_map.get(bb).unwrap();
+                {
+                    let new_bb = program.func_mut(func).dfg_mut().bb_mut(new_bb);
+                    for (i, val) in new_bb.params().iter().enumerate() {
+                        env.insert_new(*index_map.get(&i).unwrap(), *val);
+                    }
                 }
 
-
-                let bb_node = func_data.layout().bbs().node(bb).unwrap();
                 let mut new_insts = Vec::new();
-                for val in bb_node.insts().keys() {
-                    let value_data = func_data.dfg().value(*val);
-                    if alloc_inst.contains(val) {
+                let mut val_map: HashMap<Value, Value> = HashMap::new();
+
+                let get_new_bb_target = |bb: BasicBlock, _: &[Value], env: &Environment, changed: &mut bool| -> (BasicBlock, Vec<Value>){
+                    match bb_map.get(&bb) {
+                        Some(new_bb) => {
+                            *changed = true;
+                            let params = match allocated_variables.get(new_bb) {
+                                Some(vars) => {
+                                    vars.iter().map(|param| {
+                                        let (val, _) = name_to_val.get(param).unwrap();
+                                        env.get(val).unwrap()
+                                    }).collect::<Vec<_>>()
+                                },
+                                None => vec![],
+                            };
+                            (*new_bb, params)
+                        },
+                        None => (bb, vec![])
+                    }
+                };
+                let vals = program.func(func).layout().bbs().node(bb).unwrap().insts().keys().cloned().collect::<Vec<_>>();
+                for val in vals {
+                    if alloc_inst.contains(&val) {
                         continue;
                     }
-                    let value_data = func_data.dfg_mut().value(*val);
+                    let value_data = program.func(func).dfg().value(val).clone();
                     match value_data.kind() {
                         ValueKind::Store(store) => {
                             let val = store.value();
@@ -188,15 +345,121 @@ unsafe {
                             } else {
                                 new_insts.push(val);
                             }
-                        }, ValueKind::Load(load) => {
-                            // replace
+                        },
+                        ValueKind::Load(load) => {
+                            let src = load.src();
+                            if let Some(real_val) = env.get(&src) {
+                                val_map.insert(val, real_val);
+                            } else {
+                                new_insts.push(val);
+                            }
+                        },
+                        _ => {
+                            process_inst(program.func_mut(func), val, &mut val_map, &mut new_insts, &get_new_bb_target, &env, true);
                         }
                     }
                 }
+                program.func_mut(func).layout_mut().bb_mut(new_bb).insts_mut().extend(new_insts);
             }
+
+            delete_bbs(program.func_mut(func), &delete_bb);
+
+            changed = true;
+            while changed {
+                changed = false;
+                delete_bb.clear();
+                // bb_map.clear();
+                let bbs = program.func(func).layout().bbs().keys().cloned().collect::<Vec<_>>();
+                for cur_bb in bbs {
+                    let bb_data = program.func(func).dfg().bb(cur_bb);
+                    let used_by = program.func(func).dfg().bb(cur_bb).used_by().clone();
+                    let param_num = program.func(func).dfg().bb(cur_bb).params().len();
+                    let mut actual_param = vec![None; param_num];
+                    let mut removable = vec![true; param_num];
+                    for val in used_by.iter() {
+                        let value_data = program.func(func).dfg().value(*val);
+                        let mut process = |bb: BasicBlock, vals: &[Value]| {
+                            for i in 0..param_num {
+                                if let Some(val_) = vals.get(i) {
+                                    if val_ != val {
+                                        if actual_param[i].is_none() {
+                                            actual_param[i] = Some(*val);
+                                        } else if actual_param[i].unwrap() != *val {
+                                            removable[i] = false;
+                                        }
+                                    }
+                                } else {
+                                    unreachable!()
+                                }
+                            }
+                        };
+                        match value_data.kind() {
+                            ValueKind::Branch(branch) => {
+                                let true_bb = branch.true_bb();
+                                if true_bb == cur_bb {
+                                    process(true_bb, branch.true_args());
+                                }
+                                let false_bb = branch.false_bb();
+                                if false_bb == cur_bb {
+                                    process(false_bb, branch.false_args());
+                                }
+                            },
+                            ValueKind::Jump(jump) => {
+                                let target = jump.target();
+                                if target == cur_bb {
+                                    process(target, jump.args());
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
+                    let mut val_map = HashMap::new();
+                    let mut params_types = Vec::new();
+                    for i in 0..param_num {
+                        if removable[i] {
+                            let val = *bb_data.params().get(i).unwrap();
+                            let replace_val = actual_param[i].unwrap();
+                            val_map.insert(val, replace_val);
+                            let val_data = program.func(func).dfg().value(val);
+                            params_types.push(val_data.ty().clone());
+                        }
+                    }
+                    if val_map.is_empty() {
+                        continue;
+                    }
+                    changed = true;
+                    let name = bb_data.name().clone();
+                    let new_bb = program.func_mut(func).dfg_mut().new_bb().basic_block_with_params(name, params_types);
+                    program.func_mut(func).layout_mut().bbs_mut().push_key_back(new_bb).unwrap();
+                    // bb_map.insert(bb, new_bb);
+
+                    let get_new_bb_target = |bb: BasicBlock, params: &[Value], _: &Environment, changed: &mut bool| -> (BasicBlock, Vec<Value>) {
+                        if bb == cur_bb {
+                            *changed = true;
+                            let new_params = params.iter().enumerate().filter_map(|(i, val)| {
+                                if removable[i] {
+                                    Some(val)
+                                } else {
+                                    None
+                                }
+                            }).cloned().collect::<Vec<_>>();
+                            (new_bb, new_params)
+                        } else {
+                            (bb, vec![])
+                        }
+                    };
+                    let mut new_insts = Vec::new();
+                    let vals = program.func(func).layout().bbs().node(&cur_bb).unwrap().insts().keys().cloned().collect::<Vec<_>>();
+                    for val in vals {
+                        process_inst(program.func_mut(func), val, &mut val_map, &mut new_insts, &get_new_bb_target, &env, false);
+                    }
+                    for val in used_by {
+                        process_inst(program.func_mut(func), val, &mut val_map, &mut new_insts, &get_new_bb_target, &env, false);
+                    }
+                    program.func_mut(func).layout_mut().bb_mut(new_bb).insts_mut().extend(new_insts);
+                }
+            }
+            // }
         }
-
-}
-
     }
 }

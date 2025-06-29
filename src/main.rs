@@ -12,6 +12,7 @@ use koopa::opt::{Pass, PassManager};
 use frontend::environment::{Environment, IRGen};
 use opt::dead_code_elimination::DeadCodeElimination;
 use crate::backend::generate_asm;
+use crate::opt::ssa::ToSSA;
 
 lalrpop_mod!(sysy);
 
@@ -37,7 +38,9 @@ fn main() -> Result<()> {
         Ok(_) => {
             let mut passman = PassManager::new();
             passman.register(Pass::Module(Box::new(DeadCodeElimination)));
+            passman.register(Pass::Module(Box::new(ToSSA)));
             passman.run_passes(&mut program);
+
 
             match mode.as_str() {
                 "-koopa" => {

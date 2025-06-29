@@ -1,3 +1,3 @@
 pub mod dead_code_elimination;
-mod ssa;
-mod funtion_inline;
+pub mod ssa;
+pub mod funtion_inline;
