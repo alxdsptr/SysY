@@ -74,7 +74,7 @@ fn get_referenced_value(val: &ValueData) -> Vec<Value> {
             vec![binary.lhs(), binary.rhs()]
         },
         ValueKind::Store(store) => {
-            vec![store.value()]
+            vec![store.value(), store.dest()]
         },
         ValueKind::Call(call) => {
             call.args().iter().map(|arg| *arg).collect()
@@ -102,7 +102,7 @@ fn get_referenced_value(val: &ValueData) -> Vec<Value> {
 fn need_register_allocation(val: &ValueData) -> Result<bool, String> {
     match val.kind() {
         ValueKind::Binary(_) => Ok(true),
-        ValueKind::Alloc(_) => Ok(false),
+        ValueKind::Alloc(_) => Ok(true),
         ValueKind::GlobalAlloc(_) => Ok(false),
         ValueKind::Load(_) => Ok(true),
         ValueKind::GetElemPtr(_) => Ok(true),
@@ -203,13 +203,11 @@ fn alloc_register(
     }
     panic!("No free registers available for value: {:?}", val);
 }
-pub fn get_register_map(env: &Environment, program: &Program, func: Function) -> (HashMap<Value, Register>, u32) {
-    let (pred, end_bb) = get_pred_and_end(program, func);
-    let order = get_topo_order(&end_bb, &pred);
-    let bbs = program.func(func).layout().bbs().keys().collect::<Vec<_>>();
-    assert_eq!(order.len(), bbs.len());
+pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlock>, range: &HashSet<Value>) -> 
+(HashMap<BasicBlock, HashSet<Value>>, HashMap<Value, HashSet<Value>>) {
 
     let mut active_val: HashMap<Value, HashSet<Value>> = HashMap::new();
+    let mut active_at_entry: HashMap<BasicBlock, HashSet<Value>> = HashMap::new();
     let mut changed = true;
     while changed {
         changed = false;
@@ -218,24 +216,13 @@ pub fn get_register_map(env: &Environment, program: &Program, func: Function) ->
             let end= bb_node.insts().back_key().unwrap();
             let end_val = program.func(func).dfg().value(*end);
             let mut merge_bb = |bb: &BasicBlock| {
-                let target_bb = program.func(func).layout().bbs().node(bb).unwrap();
-                let start_val = target_bb.insts().front_key().unwrap();
-                active_val.entry(*start_val).or_default();
-                active_val.entry(*end).or_default();
-                let end_active = active_val.get(end).unwrap();
-                let start_active = active_val.get(start_val).unwrap();
-                let mut new_val = Vec::new();
-                for val in start_active {
-                    if !end_active.contains(val) {
-                        new_val.push(*val);
-                    }
-                }
-                if !new_val.is_empty() {
+                let end_active = active_val.entry(*end).or_default();
+                let start_active = active_at_entry.entry(*bb).or_default();
+                let old_size = end_active.len();
+                end_active.extend(start_active.iter());
+                let new_size = end_active.len();
+                if old_size != new_size {
                     changed = true;
-                    let end_active = active_val.get_mut(end).unwrap();
-                    for val in new_val {
-                        end_active.insert(val);
-                    }
                 }
             };
             match end_val.kind() {
@@ -253,9 +240,7 @@ pub fn get_register_map(env: &Environment, program: &Program, func: Function) ->
             }
 
             let vals = bb_node.insts().keys().cloned().collect::<Vec<_>>();
-            for i in (0..vals.len() - 1).rev() {
-                let val = vals[i];
-                let next= vals[i + 1];
+            let get_active = |next: Value, active_val: &mut HashMap<Value, HashSet<Value>>| -> HashSet<Value> {
                 let next_val = program.func(func).dfg().value(next);
                 let mut active = match active_val.get(&next) {
                     Some(active) => active.clone(),
@@ -266,7 +251,7 @@ pub fn get_register_map(env: &Environment, program: &Program, func: Function) ->
                 };
                 let used = get_referenced_value(&next_val);
                 for used_val in used {
-                    if env.global_symbol.contains(&used_val) {
+                    if range.contains(&used_val) {
                         continue;
                     }
                     let used_val_data = program.func(func).dfg().value(used_val);
@@ -279,11 +264,29 @@ pub fn get_register_map(env: &Environment, program: &Program, func: Function) ->
                         active.insert(used_val);
                     }
                 }
-                active.remove(&val);
+                active.remove(&next);
+                active
+            };
+            for i in (0..vals.len() - 1).rev() {
+                let val = vals[i];
+                let next= vals[i + 1];
+                let active = get_active(next, &mut active_val);
                 active_val.insert(val, active);
             }
+            let first_val = *vals.first().unwrap();
+            let active = get_active(first_val, &mut active_val);
+            active_at_entry.insert(*bb, active);
         }
     }
+    (active_at_entry, active_val)
+}
+pub fn get_register_map(env: &Environment, program: &Program, func: Function) -> (HashMap<Value, Register>, u32) {
+    let (pred, end_bb) = get_pred_and_end(program, func);
+    let order = get_topo_order(&end_bb, &pred);
+    let bbs = program.func(func).layout().bbs().keys().collect::<Vec<_>>();
+    assert_eq!(order.len(), bbs.len());
+
+    let (_, active_val) = get_active_values(program, func, &order, &env.global_symbol);
 
     let mut weight: HashMap<Value, usize> = HashMap::new();
     let mut conflicts: HashMap<Value, Vec<Value>> = HashMap::new();
