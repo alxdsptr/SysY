@@ -195,14 +195,9 @@ fn process_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<
         ValueKind::Binary(binary) => {
             let mut changed = false;
             let new_lhs = get_new_val(binary.lhs(), &mut changed);
-            // let lhs_type = func_data.dfg().value(new_lhs).ty().clone();
-            // println!("lhs_type: {:?}, changed: {:?}", lhs_type, changed);
             let new_rhs = get_new_val(binary.rhs(), &mut changed);
-            // let rhs_type = func_data.dfg().value(new_rhs).ty().clone();
-            // println!("rhs_type: {:?}, changed: {:?}", rhs_type, changed);
             if changed {
                 let new_val = func_data.dfg_mut().new_value().binary(binary.op(), new_lhs, new_rhs);
-                // println!("type: ", new_val.)
                 val_map.insert(val, new_val);
                 new_insts.push(new_val);
             } else {
@@ -236,7 +231,9 @@ fn process_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<
         ValueKind::Call(call) => {
             let mut changed = false;
             let new_args = call.args().iter().map(|arg| {
-                get_new_val(*arg, &mut changed)
+                let new_val =get_new_val(*arg, &mut changed);
+                println!("old_val: {:?}, new_val: {:?}", arg, new_val);
+                new_val
             }).collect::<Vec<_>>();
             if changed {
                 let new_val = func_data.dfg_mut().new_value().call(call.callee(), new_args);
@@ -278,9 +275,6 @@ fn process_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<
         ValueKind::Jump(jump) => {
             let mut changed = false;
             let (new_target, args) = get_new_bb_target(jump.target(), jump.args(), env, val_map, &mut changed);
-            // for (i, arg) in args.iter().enumerate() {
-            //     println!("arg {}: {:?}", i, arg);
-            // }
             if changed {
                 let new_jump = func_data.dfg_mut().new_value().jump_with_args(new_target, args);
                 println!("new jump target: {:?}", new_target);
@@ -306,9 +300,12 @@ fn delete_bbs(func_data: &mut FunctionData, delete_bb: &HashSet<BasicBlock>) {
 }
 impl ModulePass for ToSSA {
     fn run_on(&mut self, program: &mut koopa::ir::Program) {
+        let mut global_vars: HashSet<Value> = HashSet::new();
+        for val in program.inst_layout() {
+            global_vars.insert(*val);
+        }
         let functions = program.funcs().keys().cloned().collect::<Vec<_>>();
         for func in functions {
-            // let func_data = program.func_mut(func);
             let func_name = program.func(func).name();
             println!("funcname: {}", func_name);
             let bbs = program.func(func).layout().bbs().keys().cloned().collect::<Vec<_>>();
@@ -355,7 +352,6 @@ impl ModulePass for ToSSA {
                         }
                         _ => {}
                     }
-                    // referenced_vals.extend(get_referenced_value(value_data));
                 }
                 used_vals.insert(*bb, referenced_vals);
                 let end_data = program.func(func).dfg().value(*end_val);
@@ -377,7 +373,7 @@ impl ModulePass for ToSSA {
 
             let (pred, end_bb) = get_pred_and_end(program, func);
             let order = get_topo_order(&end_bb, &pred);
-            let (active_at_entry, _) = get_active_values(program, func, &order, &alloc_inst);
+            let (active_at_entry, _) = get_active_values(program, func, &order, &global_vars);
             let mut changed = true;
             while changed {
                 changed = false;
@@ -422,11 +418,6 @@ impl ModulePass for ToSSA {
                             return active_vals.contains(&val);
                         });
                     }
-                    // for val in referenced_vals {
-                    //     if let Some(val_name) = val_to_name.get(val) {
-                    //         all_vars.remove(val_name);
-                    //     }
-                    // }
                 }
             }
 
@@ -446,12 +437,14 @@ impl ModulePass for ToSSA {
                     ty.clone()
                 }).collect::<Vec<_>>();
                 let new_bb = program.func_mut(func).dfg_mut().new_bb().basic_block_with_params(name.clone(), params.clone());
-                println!("name: {} {:?}, param_len: {}", name.unwrap(), new_bb, params.len());
+                println!("name: {} newbb: {:?}, old_bb: {:?}, param_len: {}", name.unwrap(), new_bb, bb, params.len());
                 program.func_mut(func).layout_mut().bbs_mut().push_key_back(new_bb).unwrap();
                 bb_map.insert(*bb, new_bb);
             }
 
+            let mut val_map: HashMap<Value, Value> = HashMap::new();
             for bb in &bbs {
+                println!("processing bb: {:?}", bb);
                 let params = match allocated_variables.get(bb) {
                     Some(vars) => vars.clone(),
                     None => HashSet::new(),
@@ -471,19 +464,18 @@ impl ModulePass for ToSSA {
                 {
                     let new_bb = program.func_mut(func).dfg_mut().bb_mut(new_bb);
                     for (i, val) in new_bb.params().iter().enumerate() {
+                        println!("param {}: {:?}", i, val);
                         env.insert_new(*index_map.get(&i).unwrap(), *val);
                     }
                 }
 
                 let mut new_insts = Vec::new();
-                let mut val_map: HashMap<Value, Value> = HashMap::new();
                 let zero_val = program.func_mut(func).dfg_mut().new_value().integer(0);
 
                 let get_new_bb_target = |bb: BasicBlock, _: &[Value], env: &Environment, _: &HashMap<Value, Value>, changed: &mut bool| -> (BasicBlock, Vec<Value>){
                     match bb_map.get(&bb) {
                         Some(new_bb) => {
                             *changed = true;
-                            // let new_bb_name = program.func(func).dfg().bb(*new_bb).name().clone().unwrap();
                             println!("new_bb: {:?}", new_bb);
                             let params = match allocated_variables.get(&bb) {
                                 Some(vars) => {
@@ -540,14 +532,13 @@ impl ModulePass for ToSSA {
             }
 
             delete_bbs(program.func_mut(func), &delete_bb);
-            /*
             let mut active_bbs = HashSet::new();
             for bb in program.func(func).layout().bbs().keys() {
                 active_bbs.insert(*bb);
                 assert!(!delete_bb.contains(bb));
             }
             let mut val_map = HashMap::new();
-            changed = true;
+            changed = false;
             while changed {
                 changed = false;
                 delete_bb.clear();
@@ -556,15 +547,8 @@ impl ModulePass for ToSSA {
                     let bb_data = program.func(func).dfg().bb(cur_bb);
                     let bb_name = bb_data.name().as_ref().unwrap().clone();
                     println!("bb_name: {}, bb: {:?}", bb_name, cur_bb);
-                    // if cnt == 2 && bb_name == "%while_body_1" {
-                    //     break;
-                    // }
                     let used_by = bb_data.used_by().clone();
-                    // if used_by.is_empty() && !bb_name.starts_with("%entry") {
-                        // delete_bb.insert(cur_bb);
-                    //     continue;
-                    // }
-                    let params = bb_data.params().clone();
+                    let params = Vec::from(bb_data.params());
                     let param_num = params.len();
                     let mut actual_param = vec![None; param_num];
                     let mut removable = vec![true; param_num];
@@ -629,12 +613,19 @@ impl ModulePass for ToSSA {
                     changed = true;
                     delete_bb.insert(cur_bb);
                     active_bbs.remove(&cur_bb);
-                    let name = bb_data.name().clone();
-                    let new_bb = program.func_mut(func).dfg_mut().new_bb().basic_block_with_params(name, params_types);
+                    let new_bb = program.func_mut(func).dfg_mut().new_bb().basic_block_with_params(Some(bb_name), params_types);
                     println!("new_bb: {:?}", new_bb);
                     program.func_mut(func).layout_mut().bbs_mut().push_key_back(new_bb).unwrap();
+                    let new_params = program.func(func).dfg().bb(new_bb).params();
                     active_bbs.insert(new_bb);
-                    // bb_map.insert(bb, new_bb);
+                    let mut cnt = 0;
+                    for i in 0..param_num {
+                        if !removable[i] {
+                            let new_val = new_params[cnt];
+                            cnt += 1;
+                            val_map.insert(params[i], new_val);
+                        }
+                    }
 
                     let get_new_bb_target = |bb: BasicBlock, params: &[Value], _: &Environment, val_map: &HashMap<Value, Value>, changed: &mut bool| -> (BasicBlock, Vec<Value>) {
                         if bb == cur_bb {
@@ -667,9 +658,6 @@ impl ModulePass for ToSSA {
                         process_inst(program.func_mut(func), val, &mut val_map, &mut new_insts, &get_new_bb_target, &env, false);
                     }
                     program.func_mut(func).layout_mut().bb_mut(new_bb).insts_mut().extend(new_insts);
-                    // for val in used_by {
-                    //     replace_inst(program.func_mut(func), val, &mut val_map, &get_new_bb_target);
-                    // }
 
                     for &bb in active_bbs.iter() {
                         if bb == cur_bb {
@@ -683,8 +671,8 @@ impl ModulePass for ToSSA {
 
                 }
                 delete_bbs(program.func_mut(func), &delete_bb);
-                // break;
-            }*/
+                break;
+            }
         }
     }
 }

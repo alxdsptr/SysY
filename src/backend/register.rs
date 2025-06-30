@@ -203,7 +203,7 @@ fn alloc_register(
     }
     panic!("No free registers available for value: {:?}", val);
 }
-pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlock>, range: &HashSet<Value>) -> 
+pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlock>, exclude: &HashSet<Value>) -> 
 (HashMap<BasicBlock, HashSet<Value>>, HashMap<Value, HashSet<Value>>) {
 
     let mut active_val: HashMap<Value, HashSet<Value>> = HashMap::new();
@@ -251,7 +251,7 @@ pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlo
                 };
                 let used = get_referenced_value(&next_val);
                 for used_val in used {
-                    if range.contains(&used_val) {
+                    if exclude.contains(&used_val) {
                         continue;
                     }
                     let used_val_data = program.func(func).dfg().value(used_val);
