@@ -67,8 +67,15 @@ pub fn get_topo_order(
 fn get_referenced_value(val: &ValueData) -> Vec<Value> {
     match val.kind() {
         ValueKind::Branch(branch) => {
+            let mut res = Vec::new();
             let cond = branch.cond();
-            vec![cond]
+            res.push(cond);
+            res.extend(branch.true_args());
+            res.extend(branch.false_args());
+            res
+        },
+        ValueKind::Jump(jump) => {
+            vec![jump.target()]
         },
         ValueKind::Binary(binary) => {
             vec![binary.lhs(), binary.rhs()]
@@ -102,13 +109,15 @@ fn get_referenced_value(val: &ValueData) -> Vec<Value> {
 fn need_register_allocation(val: &ValueData) -> Result<bool, String> {
     match val.kind() {
         ValueKind::Binary(_) => Ok(true),
-        ValueKind::Alloc(_) => Ok(true),
+        ValueKind::Alloc(_) => Ok(false),
         ValueKind::GlobalAlloc(_) => Ok(false),
         ValueKind::Load(_) => Ok(true),
         ValueKind::GetElemPtr(_) => Ok(true),
         ValueKind::GetPtr(_) => Ok(true),
         ValueKind::Integer(_) => Ok(false),
         ValueKind::Call(_) => Ok(true),
+        ValueKind::BlockArgRef(_) => Ok(true),
+        ValueKind::FuncArgRef(_) => Ok(true),
         _ => Err(format!("Unexpected value kind: {:?}", val.kind())),
     }
 }
@@ -213,7 +222,7 @@ pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlo
         changed = false;
         for bb in order.iter() {
             let bb_node = program.func(func).layout().bbs().node(bb).unwrap();
-            let end= bb_node.insts().back_key().unwrap();
+            let end = bb_node.insts().back_key().unwrap();
             let end_val = program.func(func).dfg().value(*end);
             let mut merge_bb = |bb: &BasicBlock| {
                 let end_active = active_val.entry(*end).or_default();
@@ -269,12 +278,16 @@ pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlo
             };
             for i in (0..vals.len() - 1).rev() {
                 let val = vals[i];
-                let next= vals[i + 1];
+                let next = vals[i + 1];
                 let active = get_active(next, &mut active_val);
                 active_val.insert(val, active);
             }
             let first_val = *vals.first().unwrap();
             let active = get_active(first_val, &mut active_val);
+            let bb_data = program.func(func).dfg().bb(*bb);
+            for arg in bb_data.params() {
+                active.remove(&arg);
+            }
             active_at_entry.insert(*bb, active);
         }
     }

@@ -130,44 +130,23 @@ impl CodeGen for FunctionData {
         }
 
         let stack_size = compute_stack_size(self, env);
-        env.output.write_all(get_addi("sp", "sp", -(stack_size as i32), "a6").as_bytes()).unwrap();
         env.stack_size = stack_size;
-        env.cur_pos = (8 + min(12, env.max_reg_num) * 4) as usize; // 8 for ra and sp, 4 for each register
-        let entry_bb = self.layout().entry_bb().unwrap();
-        {
-            let bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(entry_bb);
-            env.output.write_all(format!("{}:\n", &bb_data.name().as_ref().unwrap()[1..]).as_bytes()).unwrap();
-        }
-        let bb_node = env.program.func(env.cur_func.unwrap()).layout().bbs().node(&entry_bb).unwrap();
-        let param_count = self.params().len();
-        let mut cursor = bb_node.insts().cursor_front();
-        for i in 0..param_count {
-            let inst = cursor.key().unwrap();
-            let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*inst);
-            assert!(matches!(value_data.kind(), ValueKind::Alloc(_)));
-            let offset = if i < 8 {
-                env.cur_pos += 4;
-                env.stack_size - env.cur_pos
-            } else {
-                env.stack_size + 4 * (i - 8)
-            };
-            env.insert_stack_variable(*inst, offset);
 
-            cursor.move_next();
-            let inst = cursor.key().unwrap();
-            let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*inst);
-            assert!(matches!(value_data.kind(), ValueKind::Store(_)));
-            if i < 8 {
-                // argument in ai register, store in pos offset(sp)
-                let temp = env.get_offset("sp", offset as i32, "a6");
-                env.output.write_all(format!("  sw a{}, {}\n", i, temp).as_bytes()).unwrap();
+        let param_count = self.params().len();
+        for i in 0..param_count {
+            let reg = env.get_register(self.params()[i]).unwrap();
+            if  i < 8 {
+                if reg != A0 + i as Register {
+                    env.output.write_all(format!("  mv a{}, {}\n", i, to_string(reg)).as_bytes()).unwrap();
+                }
+            } else {
+                let offset = 4 * (i - 8);
+                env.output.write_all(format!("  lw {}, {}(sp)\n", to_string(reg), offset).as_bytes()).unwrap();
             }
-            cursor.move_next();
         }
-        while let Some(inst) = cursor.key() {
-            inst.code_gen(env);
-            cursor.move_next();
-        }
+        env.output.write_all(get_addi("sp", "sp", -(stack_size as i32), "a6").as_bytes()).unwrap();
+        env.cur_pos = (8 + min(12, env.max_reg_num) * 4) as usize; // 8 for ra and sp, 4 for each register
+        
         for (bb, _) in self.layout().bbs().iter().skip(1) {
             bb.code_gen(env);
         }
@@ -183,6 +162,15 @@ impl CodeGen for BasicBlock {
         let bb_node = env.program.func(env.cur_func.unwrap()).layout().bbs().node(self).unwrap();
         for (inst, _) in bb_node.insts() {
             inst.code_gen(env);
+        }
+    }
+}
+fn process_jump(args: &[Value], block_params: &[Value], env: &mut Environment) {
+    for i in 0..block_params.len() {
+        let src = env.get_register(args[i]).unwrap();
+        let dst = env.get_register(block_params[i]).unwrap();
+        if src != dst {
+            env.output.write_all(format!("  mv {}, {}\n", to_string(dst), to_string(src)).as_bytes()).unwrap();
         }
     }
 }
@@ -214,7 +202,11 @@ impl CodeGen for Value{
             },
             ValueKind::Jump(jump) => {
                 let target = jump.target();
-                let target_name = &env.program.func(env.cur_func.unwrap()).dfg().bb(target).name().as_ref().unwrap()[1..];
+                let target_bb = env.program.func(env.cur_func.unwrap()).dfg().bb(target);
+                let target_name = &target_bb.name().as_ref().unwrap()[1..];
+                let args = jump.args();
+                let block_params = target_bb.params();
+                process_jump(args, block_params, env);
                 format!("  j {}\n", target_name)
             }
             ValueKind::Alloc(_) => {
@@ -294,11 +286,18 @@ impl CodeGen for Value{
                 let cond = to_string(env.get_reg_with_load(branch.cond(), A6).unwrap());
                 let true_bb = branch.true_bb();
                 let false_bb = branch.false_bb();
-                let true_name = &env.program.func(env.cur_func.unwrap()).dfg().bb(true_bb).name().as_ref().unwrap()[1..];
-                let false_name = &env.program.func(env.cur_func.unwrap()).dfg().bb(false_bb).name().as_ref().unwrap()[1..];
+                let true_bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(true_bb);
+                let false_bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(false_bb);
+                let true_name = &true_bb_data.name().as_ref().unwrap()[1..];
+                let false_name = &false_bb_data.name().as_ref().unwrap()[1..];
+                let true_bb_params = true_bb_data.params();
+                let false_bb_params = false_bb_data.params();
                 static BRANCH_CNT: AtomicUsize = AtomicUsize::new(0);
                 let cnt = BRANCH_CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                format!("  bnez {}, skip_{}\n  j {}\nskip_{}:\n  j {}\n", cond, cnt, false_name, cnt, true_name)
+                process_jump(branch.true_args(), true_bb_params, env);
+                env.output.write_all(format!("  bnez {}, skip_{}\n  j {}\nskip_{}:\n", cond, cnt, false_name, cnt).as_bytes()).unwrap();
+                process_jump(branch.false_args(), false_bb_params, env);
+                format!("  j {}\n", true_name)
             }
             ValueKind::Return(ret) => {
                 if let Some(value) = ret.value() {
