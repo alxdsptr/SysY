@@ -109,12 +109,12 @@ fn get_referenced_value(val: &ValueData) -> Vec<Value> {
 fn need_register_allocation(val: &ValueData) -> Result<bool, String> {
     match val.kind() {
         ValueKind::Binary(_) => Ok(true),
-        ValueKind::Alloc(_) => Ok(true),
+        ValueKind::Alloc(_) => Ok(false),
         ValueKind::GlobalAlloc(_) => Ok(false),
         ValueKind::Load(_) => Ok(true),
         ValueKind::GetElemPtr(_) => Ok(true),
         ValueKind::GetPtr(_) => Ok(true),
-        ValueKind::Integer(_) => Ok(false),
+        ValueKind::Integer(_) => Ok(true),
         ValueKind::Call(_) => Ok(true),
         ValueKind::BlockArgRef(_) => Ok(true),
         ValueKind::FuncArgRef(_) => Ok(true),
@@ -196,6 +196,9 @@ fn alloc_register(
 ) -> Register {
     let mut free_regs = vec![true; FREE_REG];
     for conflict in conflicts {
+        if val == *conflict {
+            continue;
+        }
         if let Some(&reg) = reg_map.get(conflict) {
             if reg < FREE_REG as u32 {
                 free_regs[reg as usize] = false;
@@ -212,7 +215,8 @@ fn alloc_register(
     }
     panic!("No free registers available for value: {:?}", val);
 }
-pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlock>, exclude: &HashSet<Value>) -> 
+pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlock>, exclude: &HashSet<Value>, 
+                         should_consider:  fn(&ValueData) -> Result<bool, String>) -> 
 (HashMap<BasicBlock, HashSet<Value>>, HashMap<Value, HashSet<Value>>) {
 
     let mut active_val: HashMap<Value, HashSet<Value>> = HashMap::new();
@@ -264,7 +268,7 @@ pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlo
                         continue;
                     }
                     let used_val_data = program.func(func).dfg().value(used_val);
-                    let store = match need_register_allocation(used_val_data) {
+                    let store = match should_consider(used_val_data) {
                         Ok(true) => true,
                         Ok(false) => false,
                         Err(_) => false,
@@ -293,35 +297,70 @@ pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlo
     }
     (active_at_entry, active_val)
 }
+fn process_conflicts_at_entry(active: &HashSet<Value>, params: &[Value], conflicts: &mut HashMap<Value, Vec<Value>>) {
+    for val in active {
+        conflicts.entry(*val).or_default().extend(params);
+    }
+    for val in params {
+        conflicts.entry(*val).or_default().extend(active);
+    }
+    for param in params {
+        conflicts.entry(*param).or_default().extend(params.iter().cloned());
+    }
+}
 pub fn get_register_map(env: &Environment, program: &Program, func: Function) -> (HashMap<Value, Register>, u32) {
     let (pred, end_bb) = get_pred_and_end(program, func);
     let order = get_topo_order(&end_bb, &pred);
     let bbs = program.func(func).layout().bbs().keys().collect::<Vec<_>>();
     assert_eq!(order.len(), bbs.len());
 
-    let (_, active_val) = get_active_values(program, func, &order, &env.global_symbol);
+    let (active_at_entry, active_val) = get_active_values(program, func, &order, &env.global_symbol, need_register_allocation);
 
     let mut weight: HashMap<Value, usize> = HashMap::new();
     let mut conflicts: HashMap<Value, Vec<Value>> = HashMap::new();
+    let mut vals: Vec<Value> = Vec::from(program.func(func).params());
+    
+    let func_data = program.func(func);
+    let params = func_data.params();
+    let entry_bb = func_data.layout().entry_bb().unwrap();
+    if let Some(active) = active_at_entry.get(&entry_bb) {
+        process_conflicts_at_entry(active, &params, &mut conflicts);
+    }
+    
     for bb in order.iter() {
         let bb_node = program.func(func).layout().bbs().node(bb).unwrap();
-        let vals = bb_node.insts().keys().cloned().collect::<Vec<_>>();
-        for val in vals {
-            let val_data = program.func(func).dfg().value(val);
-            match need_register_allocation(val_data) {
-                Ok(false) => continue,
-                Ok(true) => {},
-                Err(_) => continue
-            };
-            weight.insert(val, 0);
-            let active = active_val.get(&val).unwrap();
-            if active.is_empty() {
-                continue;
-            }
-            for con_val in active {
-                conflicts.entry(*con_val).or_default().push(val);
-                conflicts.entry(val).or_default().push(*con_val);
-            }
+        vals.extend(bb_node.insts().keys().cloned());
+        let bb_data = program.func(func).dfg().bb(*bb);
+        vals.extend(bb_data.params());
+        for val in bb_node.insts().keys() {
+            let val_data = program.func(func).dfg().value(*val);
+            vals.extend(get_referenced_value(val_data));
+        }
+        if let Some(active) = active_at_entry.get(bb) {
+            process_conflicts_at_entry(active, bb_data.params(), &mut conflicts);
+        }
+    }
+    for val in vals {
+        if env.global_symbol.contains(&val) {
+            continue;
+        }
+        let val_data = program.func(func).dfg().value(val);
+        match need_register_allocation(val_data) {
+            Ok(false) => continue,
+            Ok(true) => {},
+            Err(_) => continue
+        };
+        weight.insert(val, 0);
+        if !active_val.contains_key(&val) {
+            continue;
+        }
+        let active = active_val.get(&val).unwrap();
+        if active.is_empty() {
+            continue;
+        }
+        for con_val in active {
+            conflicts.entry(*con_val).or_default().push(val);
+            conflicts.entry(val).or_default().push(*con_val);
         }
     }
     let mut max_reg = 0;

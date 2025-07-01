@@ -56,7 +56,7 @@ fn main() -> Result<()> {
                     gen.generate_on(&program)?;
                     let text_form_ir = std::str::from_utf8(&gen.writer()).unwrap().to_string();
                     println!("dump IR to file");
-                    let mut ir_file = std::fs::File::create("./ir.koopa")?;
+                    let mut ir_file = std::fs::File::create("temp.koopa")?;
                     ir_file.write_all(text_form_ir.as_bytes())?;
 
                     generate_asm(&program, &mut output_file);

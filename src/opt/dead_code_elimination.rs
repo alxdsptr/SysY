@@ -4,6 +4,11 @@ use std::collections::HashSet;
 use koopa::ir::builder::{LocalInstBuilder, ValueBuilder};
 
 pub struct DeadCodeElimination;
+impl DeadCodeElimination {
+    pub fn new() -> Self {
+        DeadCodeElimination
+    }
+}
 
 impl ModulePass for DeadCodeElimination {
     fn run_on(&mut self, program: &mut Program) {

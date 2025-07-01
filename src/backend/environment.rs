@@ -70,14 +70,21 @@ impl Environment<'_> {
             format!("{}({})", offset, base)
         }
     }
-    pub fn get_reg_with_load(&mut self, value: Value, temp_reg: Register) -> Option<Register> {
+    pub fn get_reg_or_integer(&mut self, value: Value) -> Option<Register> {
         let value_data = self.program.func(self.cur_func.unwrap()).dfg().value(value);
         if let ValueKind::Integer(integer) = value_data.kind() {
-            self.output.write_all(format!("  li {}, {}\n", to_string(temp_reg), integer.value()).as_bytes()).unwrap();
-            return Some(temp_reg);
+            let reg = self.register_map.get(&value).unwrap();
+            self.output.write_all(format!("  li {}, {}\n", to_string(*reg), integer.value()).as_bytes()).unwrap();
+            return Some(*reg);
         }
         if let Some(reg) = self.register_map.get(&value) {
             return Some(*reg);
+        }
+        None
+    }
+    pub fn get_reg_with_load(&mut self, value: Value, temp_reg: Register) -> Option<Register> {
+        if let Some(reg) = self.get_reg_or_integer(value) {
+            return Some(reg);
         }
         if let Some(name) = self.global_var.get(&value) {
             let str = to_string(temp_reg);

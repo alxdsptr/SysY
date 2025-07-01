@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::collections::{HashMap, HashSet};
 use std::fmt::format;
 use std::io::Write;
 use std::sync::atomic::AtomicUsize;
@@ -61,6 +62,9 @@ impl CodeGen for Program {
         // function section
         env.output.write_all(".text\n".as_bytes()).unwrap();
         for (func, func_data) in self.funcs() {
+            if func_data.layout().entry_bb().is_none() {
+                continue;
+            }
             env.enter_new_func(*func);
             func_data.code_gen(env);
         }
@@ -137,7 +141,7 @@ impl CodeGen for FunctionData {
             let reg = env.get_register(self.params()[i]).unwrap();
             if  i < 8 {
                 if reg != A0 + i as Register {
-                    env.output.write_all(format!("  mv a{}, {}\n", i, to_string(reg)).as_bytes()).unwrap();
+                    env.output.write_all(format!("  mv {}, a{}\n", to_string(reg), i).as_bytes()).unwrap();
                 }
             } else {
                 let offset = 4 * (i - 8);
@@ -147,7 +151,7 @@ impl CodeGen for FunctionData {
         env.output.write_all(get_addi("sp", "sp", -(stack_size as i32), "a6").as_bytes()).unwrap();
         env.cur_pos = (8 + min(12, env.max_reg_num) * 4) as usize; // 8 for ra and sp, 4 for each register
         
-        for (bb, _) in self.layout().bbs().iter().skip(1) {
+        for (bb, _) in self.layout().bbs().iter() {
             bb.code_gen(env);
         }
     }
@@ -157,7 +161,12 @@ impl CodeGen for BasicBlock {
     fn code_gen(&self, env: &mut Environment) {
         {
             let bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(*self);
-            env.output.write_all(format!("{}:\n", &bb_data.name().as_ref().unwrap()[1..]).as_bytes()).unwrap();
+            env.output.write_all(format!("{}: # ", &bb_data.name().as_ref().unwrap()[1..]).as_bytes()).unwrap();
+            for param in bb_data.params() {
+                let reg = env.get_register(*param).unwrap();
+                env.output.write_all(format!("{} ", to_string(reg)).as_bytes()).unwrap();
+            }
+            env.output.write_all("\n".as_bytes()).unwrap();
         }
         let bb_node = env.program.func(env.cur_func.unwrap()).layout().bbs().node(self).unwrap();
         for (inst, _) in bb_node.insts() {
@@ -165,12 +174,56 @@ impl CodeGen for BasicBlock {
         }
     }
 }
-fn process_jump(args: &[Value], block_params: &[Value], env: &mut Environment) {
+#[derive(Copy, Clone)]
+enum RegOrInt {
+    Reg(Register),
+    Int(i32),
+}
+fn process_jump(args: &[Value], block_params: &[Value], env: &mut Environment, temp_reg: &str) {
+    let mut args : Vec<RegOrInt> = args.iter().map(|v| {
+        let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*v);
+        match value_data.kind() {
+            ValueKind::Integer(num) => RegOrInt::Int(num.value()),
+            _ => {
+                let reg = env.get_register(*v).unwrap();
+                RegOrInt::Reg(reg)
+            }
+        }
+    }).collect::<Vec<_>>();
+    let mut old_args: HashMap<Register, usize> = HashMap::new();
+    for (i, arg) in args.iter().enumerate() {
+        if let RegOrInt::Reg(reg) = arg {
+            old_args.insert(*reg, i);
+        }
+    }
+    
     for i in 0..block_params.len() {
-        let src = env.get_register(args[i]).unwrap();
-        let dst = env.get_register(block_params[i]).unwrap();
-        if src != dst {
+        let src = args[i];
+        let dst = env.get_reg_or_integer(block_params[i]).unwrap();
+        let src = match src {
+            RegOrInt::Reg(reg) => reg,
+            RegOrInt::Int(num) => {
+                env.output.write_all(format!("  li {}, {}\n", to_string(dst), num).as_bytes()).unwrap();
+                continue
+            }
+        };
+        if src == dst {
+            continue;
+        }
+        if old_args.contains_key(&dst) {
+            let idx = old_args[&dst];
+            let arg = match args[idx] {
+                RegOrInt::Reg(reg) => reg,
+                _ => unreachable!()
+            };
+            env.output.write_all(format!("  mv {}, {}\n", temp_reg, to_string(arg)).as_bytes()).unwrap();
             env.output.write_all(format!("  mv {}, {}\n", to_string(dst), to_string(src)).as_bytes()).unwrap();
+            env.output.write_all(format!("  mv {}, {}\n", to_string(src), temp_reg).as_bytes()).unwrap();
+            old_args.remove(&arg);
+            args[idx] = RegOrInt::Reg(src);
+        } else {
+            env.output.write_all(format!("  mv {}, {}\n", to_string(dst), to_string(src)).as_bytes()).unwrap();
+            old_args.remove(&src);
         }
     }
 }
@@ -206,7 +259,7 @@ impl CodeGen for Value{
                 let target_name = &target_bb.name().as_ref().unwrap()[1..];
                 let args = jump.args();
                 let block_params = target_bb.params();
-                process_jump(args, block_params, env);
+                process_jump(args, block_params, env, "a6");
                 format!("  j {}\n", target_name)
             }
             ValueKind::Alloc(_) => {
@@ -284,6 +337,9 @@ impl CodeGen for Value{
             },
             ValueKind::Branch(branch) => {
                 let cond = to_string(env.get_reg_with_load(branch.cond(), A6).unwrap());
+                if cond != "a6" {
+                    env.output.write_all(format!("  mv a6, {}\n", cond).as_bytes()).unwrap();
+                }
                 let true_bb = branch.true_bb();
                 let false_bb = branch.false_bb();
                 let true_bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(true_bb);
@@ -294,9 +350,9 @@ impl CodeGen for Value{
                 let false_bb_params = false_bb_data.params();
                 static BRANCH_CNT: AtomicUsize = AtomicUsize::new(0);
                 let cnt = BRANCH_CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                process_jump(branch.true_args(), true_bb_params, env);
-                env.output.write_all(format!("  bnez {}, skip_{}\n  j {}\nskip_{}:\n", cond, cnt, false_name, cnt).as_bytes()).unwrap();
-                process_jump(branch.false_args(), false_bb_params, env);
+                process_jump(branch.false_args(), false_bb_params, env, "a7");
+                env.output.write_all(format!("  bnez a6, skip_{}\n  j {}\nskip_{}:\n", cnt, false_name, cnt).as_bytes()).unwrap();
+                process_jump(branch.true_args(), true_bb_params, env, "a7");
                 format!("  j {}\n", true_name)
             }
             ValueKind::Return(ret) => {

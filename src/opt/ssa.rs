@@ -7,6 +7,7 @@ use koopa::opt::ModulePass;
 use koopa::ir::ValueKind;
 use koopa::ir::values::BlockArgRef;
 use crate::backend::register::{get_active_values, get_pred_and_end, get_topo_order};
+use crate::opt::dead_code_elimination::DeadCodeElimination;
 
 pub struct ToSSA;
 struct Environment {
@@ -347,6 +348,12 @@ fn delete_bbs(func_data: &mut FunctionData, delete_bb: &HashSet<BasicBlock>) {
         }
     }
 }
+fn is_alloc(val: &ValueData) -> Result<bool, String> {
+    match val.kind() {
+        ValueKind::Alloc(_) => Ok(true),
+        _ => Err("Not an alloc value".to_string()),
+    }
+}
 impl ModulePass for ToSSA {
     fn run_on(&mut self, program: &mut koopa::ir::Program) {
         let mut global_vars: HashSet<Value> = HashSet::new();
@@ -358,6 +365,9 @@ impl ModulePass for ToSSA {
             let func_name = program.func(func).name();
             println!("funcname: {}", func_name);
             let bbs = program.func(func).layout().bbs().keys().cloned().collect::<Vec<_>>();
+            if bbs.is_empty() {
+                continue;
+            }
             let mut val_to_name: HashMap<Value, String> = HashMap::new();
             let mut name_to_val: HashMap<String, (Value, Type)> = HashMap::new();
             // 到达某个基本块时分配的所有变量
@@ -422,7 +432,7 @@ impl ModulePass for ToSSA {
 
             let (pred, end_bb) = get_pred_and_end(program, func);
             let order = get_topo_order(&end_bb, &pred);
-            let (active_at_entry, _) = get_active_values(program, func, &order, &global_vars);
+            let (active_at_entry, _) = get_active_values(program, func, &order, &global_vars, is_alloc);
             let mut changed = true;
             while changed {
                 changed = false;
@@ -581,13 +591,16 @@ impl ModulePass for ToSSA {
             }
 
             delete_bbs(program.func_mut(func), &delete_bb);
+            let mut dce = DeadCodeElimination::new();
+            dce.run_on(program);
+
             let mut active_bbs = HashSet::new();
             for bb in program.func(func).layout().bbs().keys() {
                 active_bbs.insert(*bb);
                 assert!(!delete_bb.contains(bb));
             }
             let mut val_map = HashMap::new();
-            changed = false;
+            changed = true;
             while changed {
                 changed = false;
                 delete_bb.clear();
@@ -596,12 +609,20 @@ impl ModulePass for ToSSA {
                     let bb_data = program.func(func).dfg().bb(cur_bb);
                     let bb_name = bb_data.name().as_ref().unwrap().clone();
                     println!("bb_name: {}, bb: {:?}", bb_name, cur_bb);
-                    let used_by = bb_data.used_by().clone();
+
+                    // let used_by = bb_data.used_by().clone();
                     let params = Vec::from(bb_data.params());
                     let param_num = params.len();
                     let mut actual_param = vec![None; param_num];
                     let mut removable = vec![true; param_num];
-                    for val in used_by.iter() {
+                    let mut all_vals = HashSet::new();
+                    for bb in active_bbs.iter() {
+                        let vals = program.func(func).layout().bbs().node(bb).unwrap().insts().keys().cloned().collect::<Vec<_>>();
+                        for val in vals {
+                            all_vals.insert(val);
+                        }
+                    }
+                    for val in all_vals.iter() {
                         let value_data = program.func(func).dfg().value(*val);
                         let mut process = |bb: BasicBlock, vals: &[Value]| {
                             for i in 0..param_num {
@@ -649,7 +670,10 @@ impl ModulePass for ToSSA {
                         let val = params[i];
                         if removable[i] {
                             flag = true;
-                            let replace_val = actual_param[i].unwrap();
+                            let replace_val = match actual_param[i] {
+                                Some(val) => val,
+                                None => {flag = false; break;}
+                            };
                             val_map.insert(val, replace_val);
                         } else {
                             let val_data = program.func(func).dfg().value(val);
@@ -720,7 +744,6 @@ impl ModulePass for ToSSA {
 
                 }
                 delete_bbs(program.func_mut(func), &delete_bb);
-                break;
             }
         }
     }
