@@ -75,7 +75,7 @@ fn get_referenced_value(val: &ValueData) -> Vec<Value> {
             res
         },
         ValueKind::Jump(jump) => {
-            vec![jump.target()]
+            Vec::from(jump.args())
         },
         ValueKind::Binary(binary) => {
             vec![binary.lhs(), binary.rhs()]
@@ -109,7 +109,7 @@ fn get_referenced_value(val: &ValueData) -> Vec<Value> {
 fn need_register_allocation(val: &ValueData) -> Result<bool, String> {
     match val.kind() {
         ValueKind::Binary(_) => Ok(true),
-        ValueKind::Alloc(_) => Ok(false),
+        ValueKind::Alloc(_) => Ok(true),
         ValueKind::GlobalAlloc(_) => Ok(false),
         ValueKind::Load(_) => Ok(true),
         ValueKind::GetElemPtr(_) => Ok(true),
@@ -283,7 +283,7 @@ pub fn get_active_values(program: &Program, func: Function, order: &Vec<BasicBlo
                 active_val.insert(val, active);
             }
             let first_val = *vals.first().unwrap();
-            let active = get_active(first_val, &mut active_val);
+            let mut active = get_active(first_val, &mut active_val);
             let bb_data = program.func(func).dfg().bb(*bb);
             for arg in bb_data.params() {
                 active.remove(&arg);

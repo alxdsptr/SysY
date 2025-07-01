@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use koopa::ir;
 use koopa::ir::{BasicBlock, FunctionData, Type, TypeKind, Value};
 use koopa::ir::builder::{BasicBlockBuilder, EntityInfoQuerier, LocalInstBuilder, ValueBuilder};
 use koopa::ir::entities::ValueData;
@@ -155,6 +156,24 @@ fn replace_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<
     }
 
 }
+
+fn compute_binary(op: ir::BinaryOp, lhs: i32, rhs: i32) -> i32 {
+    match op {
+        ir::BinaryOp::Add => lhs + rhs,
+        ir::BinaryOp::Sub => lhs - rhs,
+        ir::BinaryOp::Mul => lhs * rhs,
+        ir::BinaryOp::Div => lhs / rhs,
+        ir::BinaryOp::Mod => lhs % rhs,
+        ir::BinaryOp::Eq => if lhs == rhs { 1 } else { 0 },
+        ir::BinaryOp::NotEq => if lhs != rhs { 1 } else { 0 },
+        ir::BinaryOp::Gt => if lhs > rhs { 1 } else { 0 },
+        ir::BinaryOp::Ge => if lhs >= rhs { 1 } else { 0 },
+        ir::BinaryOp::Lt => if lhs < rhs { 1 } else { 0 },
+        ir::BinaryOp::Le => if lhs <= rhs { 1 } else { 0 },
+        _ => unreachable!("Unsupported binary operation: {:?}", op),
+    }
+}
+
 fn process_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<Value, Value>,
                 new_insts: &mut Vec<Value>, get_new_bb_target: &dyn Fn(BasicBlock, &[Value], &Environment, &HashMap<Value, Value>, &mut bool) -> (BasicBlock, Vec<Value>),
                 env: &Environment, first: bool
@@ -196,10 +215,31 @@ fn process_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<
             let mut changed = false;
             let new_lhs = get_new_val(binary.lhs(), &mut changed);
             let new_rhs = get_new_val(binary.rhs(), &mut changed);
+            let new_lhs_data = func_data.dfg().value(new_lhs);
+            let lhs: Option<i32> = match new_lhs_data.kind() {
+                ValueKind::Integer(lhs) => Some(lhs.value()),
+                _ => None,
+            };
+            let new_rhs_data = func_data.dfg().value(new_rhs);
+            let rhs: Option<i32> = match new_rhs_data.kind() {
+                ValueKind::Integer(rhs) => Some(rhs.value()),
+                _ => None,
+            };
+            if lhs.is_some() && rhs.is_some() {
+                changed = true;
+            }
             if changed {
-                let new_val = func_data.dfg_mut().new_value().binary(binary.op(), new_lhs, new_rhs);
+                let new_val = if lhs.is_some() && rhs.is_some() {
+                    let lhs = lhs.unwrap();
+                    let rhs = rhs.unwrap();
+                    let new_val = compute_binary(binary.op(), lhs, rhs);
+                    func_data.dfg_mut().new_value().integer(new_val)
+                } else {
+                    let new_val = func_data.dfg_mut().new_value().binary(binary.op(), new_lhs, new_rhs);
+                    new_insts.push(new_val);
+                    new_val
+                };
                 val_map.insert(val, new_val);
-                new_insts.push(new_val);
             } else {
                 new_insts.push(val);
             }
@@ -262,12 +302,21 @@ fn process_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<
             let new_cond = get_new_val(branch.cond(), &mut false);
             let (new_true_bb, true_args) = get_new_bb_target(branch.true_bb(), branch.true_args(), env, val_map, &mut changed);
             let (new_false_bb, false_args) = get_new_bb_target(branch.false_bb(), branch.false_args(), env, val_map, &mut changed);
-
+            if let ValueKind::Integer(num) = func_data.dfg().value(new_cond).kind() {
+                changed = true;
+            }
             if changed {
-                println!("new branch, true_bb: {:?}, false_bb: {:?}", new_true_bb, new_false_bb);
-                let new_branch = func_data.dfg_mut().new_value().branch_with_args(new_cond,
-                                                                                  new_true_bb, new_false_bb, true_args, false_args);
-                new_insts.push(new_branch);
+                let new_inst = if let ValueKind::Integer(num) = func_data.dfg().value(new_cond).kind() {
+                    if num.value() == 0 {
+                        func_data.dfg_mut().new_value().jump_with_args(new_false_bb, false_args)
+                    } else {
+                        func_data.dfg_mut().new_value().jump_with_args(new_true_bb, true_args)
+                    }
+                } else {
+                    println!("new branch, true_bb: {:?}, false_bb: {:?}", new_true_bb, new_false_bb);
+                    func_data.dfg_mut().new_value().branch_with_args(new_cond, new_true_bb, new_false_bb, true_args, false_args)
+                };
+                new_insts.push(new_inst);
             } else {
                 new_insts.push(val);
             }
