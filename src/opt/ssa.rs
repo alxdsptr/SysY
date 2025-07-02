@@ -226,8 +226,46 @@ fn process_inst(func_data: &mut FunctionData, val: Value, val_map: &mut HashMap<
                 ValueKind::Integer(rhs) => Some(rhs.value()),
                 _ => None,
             };
+            let is_num = |val: Option<i32>, num: i32| {
+                if let Some(v) = val {
+                    v ==num
+                } else {
+                    false
+                }
+            };
             if lhs.is_some() && rhs.is_some() {
                 changed = true;
+            } else {
+                match binary.op() {
+                    ir::BinaryOp::Add => {
+                        if is_num(lhs, 0) {
+                            val_map.insert(val, new_rhs);
+                            return;
+                        } else if is_num(rhs, 0) {
+                            val_map.insert(val, new_lhs);
+                            return;
+                        }
+                    },
+                    ir::BinaryOp::Sub => {
+                        if is_num(rhs, 0) {
+                            val_map.insert(val, new_lhs);
+                            return;
+                        }
+                    },
+                    ir::BinaryOp::Mul => {
+                        if is_num(lhs, 0) || is_num(rhs, 0) {
+                            val_map.insert(val, func_data.dfg_mut().new_value().integer(0));
+                            return;
+                        } else if is_num(lhs, 1) {
+                            val_map.insert(val, new_rhs);
+                            return;
+                        } else if is_num(rhs, 1) {
+                            val_map.insert(val, new_lhs);
+                            return;
+                        }
+                    },
+                    _ => {}
+                }
             }
             if changed {
                 let new_val = if lhs.is_some() && rhs.is_some() {

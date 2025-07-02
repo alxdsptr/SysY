@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use koopa::ir::{BasicBlock, FunctionData, Type, Value};
+use koopa::ir::{BasicBlock, FunctionData, Type, Value, ValueKind};
 use koopa::ir;
 use koopa::ir::builder::{LocalInstBuilder, ValueBuilder};
 use crate::frontend::ast;
@@ -198,7 +198,24 @@ impl IRGen for VarDecl {
                                 },
                                 InitVal::Array(inits) => {
                                     let res = get_init_vals(env, &raw_dim, inits.clone(), true)?;
-                                    env.add_aggregate(res)
+                                    let mut all_zero = true;
+                                    for val in res.iter() {
+                                        let val_data = env.program.borrow_value(*val);
+                                        if let ValueKind::Integer(num) = val_data.kind() {
+                                            if num.value() != 0 {
+                                                all_zero = false;
+                                                break;
+                                            }
+                                        } else {
+                                            all_zero = false;
+                                            break;
+                                        }
+                                    }
+                                    if all_zero {
+                                        env.program.new_value().zero_init(Type::get_array(self.btype.to_type(), total))
+                                    } else {
+                                        env.add_aggregate(res)
+                                    }
                                 }
                             };
                             env.add_global_alloc(init, ident.clone())

@@ -125,43 +125,20 @@ pub type Register = u32;
 pub fn to_string(reg: Register) -> String {
     if reg < 12 {
         format!("s{}", reg)
-    } else if reg < 19 {
+    } else if reg < 17 {
         format!("t{}", reg - 12)
-    } else if reg < 27 {
-        format!("a{}", reg - 19)
+    } else if reg < 25 {
+        format!("a{}", reg - 17)
     } else {
         panic!("Register out of range: {}", reg);
     }
 }
-pub const A0: Register = 19;
-pub const A6: Register = 25;
-pub const A7: Register = 26;
-pub fn from_string(s: &str) -> Result<Register, String> {
-    if s.starts_with("s") {
-        let reg_num = s[1..].parse::<u32>().map_err(|_| format!("Invalid register name: {}", s))?;
-        if reg_num < 12 {
-            Ok(reg_num)
-        } else {
-            Err(format!("Invalid s-register number: {}", reg_num))
-        }
-    } else if s.starts_with("t") {
-        let reg_num = s[1..].parse::<u32>().map_err(|_| format!("Invalid register name: {}", s))?;
-        if reg_num < 7 {
-            Ok(reg_num + 12)
-        } else {
-            Err(format!("Invalid t-register number: {}", reg_num))
-        }
-    } else if s.starts_with("a") {
-        let reg_num = s[1..].parse::<u32>().map_err(|_| format!("Invalid register name: {}", s))?;
-        if reg_num < 7 {
-            Ok(reg_num + 19)
-        } else {
-            Err(format!("Invalid a-register number: {}", reg_num))
-        }
-    } else {
-        Err(format!("Unknown register prefix in name: {}", s))
-    }
-}
+pub const A0: Register = 17;
+pub const T5: Register = 25;
+pub const T6: Register = 26;
+// pub const A6: Register = 25;
+// pub const A7: Register = 26;
+
 struct Node {
     val: Value,
     weight: usize,
@@ -338,6 +315,50 @@ pub fn get_register_map(env: &Environment, program: &Program, func: Function) ->
         }
         if let Some(active) = active_at_entry.get(bb) {
             process_conflicts_at_entry(active, bb_data.params(), &mut conflicts);
+        }
+    }
+    for bb in order.iter() {
+        let bb_node = program.func(func).layout().bbs().node(bb).unwrap();
+        let mut process_bb = |bb: BasicBlock, params: &[Value]| {
+            let bb_data = program.func(func).dfg().bb(bb);
+            let bb_params = bb_data.params();
+            for param in params {
+                conflicts.entry(*param).or_default().extend(bb_params);
+            }
+            for param in bb_params {
+                conflicts.entry(*param).or_default().extend(params);
+            }
+        };
+        for val in bb_node.insts().keys() {
+            let val_data = program.func(func).dfg().value(*val);
+            match val_data.kind() {
+                ValueKind::Branch(branch) => {
+                    process_bb(branch.true_bb(), branch.true_args());
+                    process_bb(branch.false_bb(), branch.false_args());
+                },
+                ValueKind::Jump(jump) => {
+                    process_bb(jump.target(), jump.args());
+                },
+                _ => {}
+            }
+        }
+        for val in bb_node.insts().keys() {
+            let val_data = program.func(func).dfg().value(*val);
+            let referenced_vals = get_referenced_value(val_data);
+            let referenced_vals: Vec<Value> = referenced_vals.into_iter().filter(|v| {
+                if env.global_symbol.contains(v) {
+                    return false;
+                };
+                let val_data = program.func(func).dfg().value(*v);
+                match need_register_allocation(val_data) {
+                    Ok(true) => true,
+                    Ok(false) => false,
+                    Err(_) => false,
+                }
+            }).collect();
+            for &referenced_val in referenced_vals.iter() {
+                conflicts.entry(referenced_val).or_default().extend(referenced_vals.iter().cloned());
+            }
         }
     }
     for val in vals {
