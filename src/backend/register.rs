@@ -4,7 +4,7 @@ use koopa::ir::{BasicBlock, Program, ValueKind, Function, Value};
 use koopa::ir::entities::ValueData;
 use crate::backend::environment::Environment;
 
-const FREE_REG: usize = 25;
+pub const FREE_REG: usize = 25;
 pub fn get_pred_and_end(program: &Program, func: Function) ->
                (HashMap<BasicBlock, Vec<BasicBlock>>, Vec<BasicBlock>) {
     let func_data = program.func(func);
@@ -129,6 +129,10 @@ pub fn to_string(reg: Register) -> String {
         format!("t{}", reg - 12)
     } else if reg < 25 {
         format!("a{}", reg - 17)
+    } else if reg < 27 {
+        format!("t{}", reg - 20)
+    } else if reg == 27 {
+        "x0".to_string()
     } else {
         panic!("Register out of range: {}", reg);
     }
@@ -136,6 +140,7 @@ pub fn to_string(reg: Register) -> String {
 pub const A0: Register = 17;
 pub const T5: Register = 25;
 pub const T6: Register = 26;
+pub const X0: Register = 27;
 // pub const A6: Register = 25;
 // pub const A7: Register = 26;
 
@@ -168,7 +173,7 @@ impl Ord for Node {
 }
 fn alloc_register(
     reg_map: &mut HashMap<Value, Register>,
-    val: Value,
+    val: Value, hint: Option<Register>,
     conflicts: &Vec<Value>,
 ) -> Register {
     let mut free_regs = vec![true; FREE_REG];
@@ -182,6 +187,12 @@ fn alloc_register(
             } else {
                 panic!("Register out of range: {}", reg);
             }
+        }
+    }
+    if let Some(hint_reg) = hint {
+        if hint_reg < FREE_REG as u32 && free_regs[hint_reg as usize] {
+            reg_map.insert(val, hint_reg);
+            return hint_reg;
         }
     }
     for i in 0..FREE_REG {
@@ -285,7 +296,7 @@ fn process_conflicts_at_entry(active: &HashSet<Value>, params: &[Value], conflic
         conflicts.entry(*param).or_default().extend(params.iter().cloned());
     }
 }
-pub fn get_register_map(env: &Environment, program: &Program, func: Function) -> (HashMap<Value, Register>, u32) {
+pub fn get_register_map(env: &Environment, program: &Program, func: Function, hint: &HashMap<Value, Register>, pre_defined: HashMap<Value, Register>) -> (HashMap<Value, Register>, HashMap<BasicBlock, HashSet<Value>>, HashMap<Value, HashSet<Value>>) {
     let (pred, end_bb) = get_pred_and_end(program, func);
     let order = get_topo_order(&end_bb, &pred);
     let bbs = program.func(func).layout().bbs().keys().collect::<Vec<_>>();
@@ -384,9 +395,8 @@ pub fn get_register_map(env: &Environment, program: &Program, func: Function) ->
             conflicts.entry(val).or_default().push(*con_val);
         }
     }
-    let mut max_reg = 0;
     let mut priority_queue: BinaryHeap<Node> = BinaryHeap::new();
-    let mut reg_map: HashMap<Value, Register> = HashMap::new();
+    let mut reg_map: HashMap<Value, Register> = pre_defined;
 
     let vals = weight.keys().cloned().collect::<Vec<_>>();
     for val in vals {
@@ -406,10 +416,7 @@ pub fn get_register_map(env: &Environment, program: &Program, func: Function) ->
             }
             let conflicts_list = conflicts.get(&val).unwrap();
             // Allocate register for the value
-            let reg = alloc_register(&mut reg_map, val, conflicts_list);
-            if reg > max_reg {
-                max_reg = reg;
-            }
+            alloc_register(&mut reg_map, val, hint.get(&val).copied(), conflicts_list);
             for conflict in conflicts_list {
                 if !reg_map.contains_key(conflict) {
                     let conflict_weight = *weight.get(conflict).unwrap() + 1;
@@ -420,6 +427,6 @@ pub fn get_register_map(env: &Environment, program: &Program, func: Function) ->
         }
 
     }
-    (reg_map, max_reg + 1)
+    (reg_map, active_at_entry, active_val)
 }
 

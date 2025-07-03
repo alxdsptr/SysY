@@ -3,7 +3,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::Write;
 use once_cell::sync::Lazy;
-
+use crate::backend::peekhole::Peekhole;
 // riscv 寄存器命名规则
 
 static REG_MAP: Lazy<HashMap<&'static str, u32>> = Lazy::new(|| {
@@ -27,10 +27,17 @@ static REG_NAME: Lazy<Vec<&str>> = Lazy::new(|| {
         "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"
     ]
 });
-pub struct Reg(u32);
+#[derive(Copy, Clone)]
+#[derive(PartialEq)]
+pub struct Reg(pub u32);
 impl Reg {
     pub fn from_string(s: &str) -> Reg {
         REG_MAP.get(s).map(|r| Reg(*r)).unwrap()
+    }
+}
+impl From<Reg> for usize {
+    fn from(reg: Reg) -> usize {
+        reg.0 as usize
     }
 }
 impl Display for Reg {
@@ -82,7 +89,13 @@ impl Function {
             }
         }
     }
+    pub fn optimize(&mut self) {
+        for section in self.section_data.values_mut() {
+            Peekhole::run_on(section);
+        }
+    }
 }
+#[derive(PartialEq)]
 pub enum RiscVBinaryOp {
     Add,
     Sub,

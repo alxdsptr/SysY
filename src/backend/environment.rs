@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
-use koopa::ir::{Function, Program, Value, ValueKind};
+use koopa::ir::{BasicBlock, Function, Program, Value, ValueKind};
 use crate::backend::asm::{Inst, Reg, RiscVBinaryOp};
-use crate::backend::register::{get_register_map, to_string, Register};
+use crate::backend::register::{get_register_map, to_string, Register, X0, A0};
 
 pub struct Environment<'a> {
     pub program: &'a Program,
-    register_map: HashMap<Value, Register>,
+    pub register_map: HashMap<Value, Register>,
     var_pos: HashMap<Value, usize>,
     global_var: HashMap<Value, String>,
     pub global_symbol: HashSet<Value>,
@@ -15,7 +15,8 @@ pub struct Environment<'a> {
     pub cur_func: Option<Function>,
     pub cur_pos: usize,
     pub stack_size: usize,
-    pub max_reg_num: u32,
+    pub active_at_entry: HashMap<BasicBlock, HashSet<Value>>,
+    pub active_map: HashMap<Value, HashSet<Value>>,
 
 }
 
@@ -31,15 +32,37 @@ impl Environment<'_> {
             cur_func: None,
             cur_pos: 0,
             stack_size: 0,
-            max_reg_num: 0,
+            active_at_entry: HashMap::new(),
+            active_map: HashMap::new(),
         }
     }
     pub fn enter_new_func(&mut self, func: Function) {
         self.cur_func = Some(func);
         self.var_pos.clear();
-        let (register_map, max_reg_num) = get_register_map(self, self.program, func);
+        let mut hint = HashMap::new();
+        let func_data = self.program.func(func);
+        for (i, param) in func_data.params().iter().enumerate() {
+            if i < 8 {
+                hint.insert(*param, A0 + i as Register);
+            }
+        }
+        for (_, bb_node) in func_data.layout().bbs() {
+            for val in bb_node.insts().keys() {
+                let value_data = self.program.func(func).dfg().value(*val);
+                if let ValueKind::Call(call) = value_data.kind() {
+                    for (i, arg) in call.args().iter().enumerate() {
+                        if i < 8 {
+                            hint.insert(*arg, A0 + i as Register);
+                        }
+                    }
+                }
+            }
+        }
+        let pre_defined = HashMap::new();
+        let (register_map, active_at_entry, active_map) = get_register_map(self, self.program, func, &hint, pre_defined);
         self.register_map = register_map;
-        self.max_reg_num = max_reg_num;
+        self.active_at_entry = active_at_entry;
+        self.active_map = active_map;
     }
     pub fn insert_global_variable(&mut self, name: Value, value: &str) {
         self.global_var.insert(name.clone(), value.to_string());
@@ -62,6 +85,9 @@ impl Environment<'_> {
     pub fn get_reg_or_integer(&mut self, value: Value, insts: &mut Vec<Inst>) -> Option<Register> {
         let value_data = self.program.func(self.cur_func.unwrap()).dfg().value(value);
         if let ValueKind::Integer(integer) = value_data.kind() {
+            if integer.value() == 0 {
+                return Some(X0);
+            }
             let reg = self.register_map.get(&value).unwrap();
             insts.push(Inst::Li(Reg::from_string(&to_string(*reg)), integer.value()));
             return Some(*reg);

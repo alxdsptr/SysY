@@ -1,4 +1,4 @@
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::fmt::format;
 use std::io::Write;
@@ -8,7 +8,7 @@ use koopa::ir::ValueKind;
 use koopa::ir::BinaryOp;
 use crate::backend::asm;
 use crate::backend::environment::Environment;
-use crate::backend::register::{to_string, Register, A0, T5, T6};
+use crate::backend::register::{to_string, Register, A0, FREE_REG, T5, T6};
 use crate::backend::asm::{Reg, Inst, RiscVBinaryOp};
 
 pub trait CodeGen {
@@ -70,7 +70,8 @@ impl CodeGen for Program {
                 continue;
             }
             env.enter_new_func(*func);
-            let func = func_data.code_gen(env);
+            let mut func = func_data.code_gen(env);
+            func.optimize();
             func.dump(env.output);
         }
     }
@@ -104,7 +105,7 @@ fn compute_stack_size(func: &FunctionData, env: &mut Environment) -> usize {
     if max_arg_num > 8 {
         stack_size += (max_arg_num - 8) * 4; // these args are stored in the stack of the callee
     }
-    stack_size += (env.max_reg_num * 4) as usize; // reserve space for registers
+    stack_size += (25 * 4) as usize; // reserve space for registers
     stack_size += 8; // return address and sp
     // align stack to 16 bytes
     stack_size = (stack_size + 15) & (!0xF);
@@ -117,24 +118,45 @@ fn get_addi(rd: &str, rs: &str, imm: i32, temp: &str) -> Vec<Inst> {
         vec![Inst::BinaryImm(RiscVBinaryOp::Add, Reg::from_string(rd), Reg::from_string(rs), imm)]
     }
 }
+fn get_used_reg(reg_map: &HashMap<Value, Register>, active_vals: &HashSet<Value>) -> Vec<bool> {
+    let mut used_regs = vec![false; FREE_REG];
+    for val in active_vals {
+        if let Some(&reg) = reg_map.get(&val) {
+            used_regs[reg as usize] = true;
+        }
+    }
+    used_regs
+}
+
+fn get_all_used_reg(reg_map: &HashMap<Value, Register>) -> Vec<bool> {
+    let mut used_regs = vec![false; FREE_REG];
+    for reg in reg_map.values() {
+        used_regs[*reg as usize] = true;
+    }
+    used_regs
+}
 impl CodeGen for FunctionData {
     type Output = asm::Function;
     fn code_gen(&self, env: &mut Environment) -> Self::Output {
         let mut func = asm::Function::new(&self.name()[1..]);
         let label = format!("{}_entry", &self.name()[1..]);
         let mut insts = Vec::new();
-        // env.output.write_all(format!("  .globl {}\n", &self.name()[1..]).as_bytes()).unwrap();
-        // env.output.write_all(format!("{}:\n", &self.name()[1..]).as_bytes()).unwrap();
-        println!("{}, max reg num: {}", self.name(), env.max_reg_num);
+        // println!("{}, max reg num: {}", self.name(), env.max_reg_num);
 
         // store ra and sp to stack
         insts.push(Inst::Sw(Reg::from_string("ra"), Reg::from_string("sp"), -4));
         insts.push(Inst::Sw(Reg::from_string("sp"), Reg::from_string("sp"), -8));
 
-        for i in 0..min(12, env.max_reg_num) {
+        let used_regs = get_all_used_reg(&env.register_map);
+        let mut max_reg = 0;
+        for i in 0..12 {
             let reg = to_string(i);
-            insts.push(Inst::Sw(Reg::from_string(&reg), Reg::from_string("sp"), -((12 + i * 4) as i32)));
+            if used_regs[i as usize] {
+                insts.push(Inst::Sw(Reg::from_string(&reg), Reg::from_string("sp"), -((12 + i * 4) as i32)));
+                max_reg = max(max_reg, i);
+            }
         }
+        max_reg += 1;
 
         let stack_size = compute_stack_size(self, env);
         env.stack_size = stack_size;
@@ -153,7 +175,7 @@ impl CodeGen for FunctionData {
         }
         // env.output.write_all(get_addi("sp", "sp", -(stack_size as i32), "t5").as_bytes()).unwrap();
         insts.extend(get_addi("sp", "sp", -(stack_size as i32), "t5"));
-        env.cur_pos = (8 + min(12, env.max_reg_num) * 4) as usize; // 8 for ra and sp, 4 for each register
+        env.cur_pos = (8 + max_reg * 4) as usize; // 8 for ra and sp, 4 for each register
         func.add_section(label.as_str(), insts);
         
         for (bb, _) in self.layout().bbs().iter() {
@@ -168,15 +190,6 @@ impl CodeGen for FunctionData {
 impl CodeGen for BasicBlock {
     type Output = Vec<Inst>;
     fn code_gen(&self, env: &mut Environment) -> Self::Output {
-        // {
-        //     let bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(*self);
-        //     env.output.write_all(format!("{}: # ", &bb_data.name().as_ref().unwrap()[1..]).as_bytes()).unwrap();
-        //     for param in bb_data.params() {
-        //         let reg = env.get_register(*param).unwrap();
-        //         env.output.write_all(format!("{} ", to_string(reg)).as_bytes()).unwrap();
-        //     }
-        //     env.output.write_all("\n".as_bytes()).unwrap();
-        // }
         let bb_node = env.program.func(env.cur_func.unwrap()).layout().bbs().node(self).unwrap();
         let mut insts = Vec::new();
         for (inst, _) in bb_node.insts() {
@@ -372,20 +385,25 @@ impl CodeGen for Value{
                 }
                 // restore sp and ra
                 insts.extend(get_addi("sp", "sp", env.stack_size as i32, "t6"));
-
-                for i in 0..min(12, env.max_reg_num) {
+                let used_regs = get_all_used_reg(&env.register_map);
+                for i in 0..12 {
                     let reg = to_string(i);
-                    insts.push(Inst::Lw(Reg::from_string(&reg), Reg::from_string("sp"), -((12 + i * 4) as i32)));
+                    if used_regs[i as usize] {
+                        insts.push(Inst::Lw(Reg::from_string(&reg), Reg::from_string("sp"), -((12 + i * 4) as i32)));
+                    }
                 }
                 insts.push(Inst::Lw(Reg::from_string("ra"), Reg::from_string("sp"), -4));
                 insts.push(Inst::Lw(Reg::from_string("sp"), Reg::from_string("sp"), -8));
                 insts.push(Inst::Ret);
             },
             ValueKind::Call(call) => {
-                if env.max_reg_num > 12 {
-                    for i in 12..env.max_reg_num {
-                        let reg = to_string(i);
-                        // let offset = env.stack_size - env.cur_pos - 4 * (i - 12);
+                let active_vals = env.active_map.get(self).unwrap();
+                let mut used_regs = get_used_reg(&env.register_map, active_vals);
+                let self_reg = env.get_register(*self).unwrap();
+                used_regs[self_reg as usize] = false;
+                for i in 12..FREE_REG {
+                    let reg = to_string(i as Register);
+                    if used_regs[i] {
                         env.cur_pos += 4;
                         let offset = env.stack_size - env.cur_pos;
                         let (temp, off) = env.get_offset("sp", offset as i32, "t5", &mut insts);
@@ -422,9 +440,9 @@ impl CodeGen for Value{
                     _ => {unreachable!()}
                 };
 
-                if env.max_reg_num > 12 {
-                    for i in 12..env.max_reg_num {
-                        let reg = to_string(i);
+                for i in (12..FREE_REG).rev() {
+                    let reg = to_string(i as Register);
+                    if used_regs[i] {
                         let offset = env.stack_size - env.cur_pos;
                         env.cur_pos -= 4;
                         let (temp, off) = env.get_offset("sp", offset as i32, "t5", &mut insts);
