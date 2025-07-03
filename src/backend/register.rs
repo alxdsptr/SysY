@@ -64,7 +64,7 @@ pub fn get_topo_order(
     }
     order
 }
-fn get_referenced_value(val: &ValueData) -> Vec<Value> {
+pub fn get_referenced_value(val: &ValueData) -> Vec<Value> {
     match val.kind() {
         ValueKind::Branch(branch) => {
             let mut res = Vec::new();
@@ -100,7 +100,7 @@ fn get_referenced_value(val: &ValueData) -> Vec<Value> {
             vec![getptr.src(), getptr.index()]
         },
         ValueKind::GetElemPtr(getelemptr) => {
-            vec![getelemptr.index()]
+            vec![getelemptr.src(), getelemptr.index()]
         },
         _ => Vec::new(),
     }
