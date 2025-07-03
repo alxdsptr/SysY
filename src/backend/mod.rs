@@ -2,6 +2,7 @@ pub mod environment;
 pub mod code_gen;
 pub(crate) mod register;
 mod asm;
+mod peekhole;
 
 use std::fs::File;
 use koopa::ir::Program;

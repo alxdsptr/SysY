@@ -6,15 +6,19 @@ use std::sync::atomic::AtomicUsize;
 use koopa::ir::{BasicBlock, FunctionData, Program, TypeKind, Value};
 use koopa::ir::ValueKind;
 use koopa::ir::BinaryOp;
+use crate::backend::asm;
 use crate::backend::environment::Environment;
 use crate::backend::register::{to_string, Register, A0, T5, T6};
+use crate::backend::asm::{Reg, Inst, RiscVBinaryOp};
 
 pub trait CodeGen {
-    fn code_gen(&self, env: &mut Environment);
+    type Output;
+    fn code_gen(&self, env: &mut Environment) -> Self::Output;
 }
 
 impl CodeGen for Program {
-    fn code_gen(&self, env: &mut Environment) {
+    type Output = ();
+    fn code_gen(&self, env: &mut Environment) -> Self::Output {
         // data section
         env.output.write_all("  .data\n".as_bytes()).unwrap();
         for &val in self.inst_layout() {
@@ -66,7 +70,8 @@ impl CodeGen for Program {
                 continue;
             }
             env.enter_new_func(*func);
-            func_data.code_gen(env);
+            let func = func_data.code_gen(env);
+            func.dump(env.output);
         }
     }
 }
@@ -96,10 +101,6 @@ fn compute_stack_size(func: &FunctionData, env: &mut Environment) -> usize {
             }
         }
     }
-    let param_count = func.params().len();
-    if param_count > 8 {
-        stack_size -= (param_count - 8) * 4; // these params are stored in the stack of the caller
-    }
     if max_arg_num > 8 {
         stack_size += (max_arg_num - 8) * 4; // these args are stored in the stack of the callee
     }
@@ -109,29 +110,30 @@ fn compute_stack_size(func: &FunctionData, env: &mut Environment) -> usize {
     stack_size = (stack_size + 15) & (!0xF);
     stack_size
 }
-fn get_addi(rd: &str, rs: &str, imm: i32, temp: &str) -> String {
+fn get_addi(rd: &str, rs: &str, imm: i32, temp: &str) -> Vec<Inst> {
     if imm > 2047 || imm < -2048 {
-        format!("  li {}, {}\n  add {}, {}, {}\n", temp, imm, rd, rs, temp)
+        vec![Inst::Li(Reg::from_string(temp), imm), Inst::Binary(RiscVBinaryOp::Add, Reg::from_string(rd), Reg::from_string(temp), Reg::from_string(rs))]
     } else {
-        format!("  addi {}, {}, {}\n", rd, rs, imm)
+        vec![Inst::BinaryImm(RiscVBinaryOp::Add, Reg::from_string(rd), Reg::from_string(rs), imm)]
     }
 }
 impl CodeGen for FunctionData {
-    fn code_gen(&self, env: &mut Environment) {
-        if self.layout().entry_bb().is_none() {
-            return;
-        }
-        env.output.write_all(format!("  .globl {}\n", &self.name()[1..]).as_bytes()).unwrap();
-        env.output.write_all(format!("{}:\n", &self.name()[1..]).as_bytes()).unwrap();
+    type Output = asm::Function;
+    fn code_gen(&self, env: &mut Environment) -> Self::Output {
+        let mut func = asm::Function::new(&self.name()[1..]);
+        let label = format!("{}_entry", &self.name()[1..]);
+        let mut insts = Vec::new();
+        // env.output.write_all(format!("  .globl {}\n", &self.name()[1..]).as_bytes()).unwrap();
+        // env.output.write_all(format!("{}:\n", &self.name()[1..]).as_bytes()).unwrap();
         println!("{}, max reg num: {}", self.name(), env.max_reg_num);
 
         // store ra and sp to stack
-        env.output.write_all("  sw ra, -4(sp)\n".as_bytes()).unwrap();
-        env.output.write_all("  sw sp, -8(sp)\n".as_bytes()).unwrap();
+        insts.push(Inst::Sw(Reg::from_string("ra"), Reg::from_string("sp"), -4));
+        insts.push(Inst::Sw(Reg::from_string("sp"), Reg::from_string("sp"), -8));
 
         for i in 0..min(12, env.max_reg_num) {
             let reg = to_string(i);
-            env.output.write_all(format!("  sw {}, -{}(sp)\n", reg, 12 + i * 4).as_bytes()).unwrap();
+            insts.push(Inst::Sw(Reg::from_string(&reg), Reg::from_string("sp"), -((12 + i * 4) as i32)));
         }
 
         let stack_size = compute_stack_size(self, env);
@@ -142,37 +144,45 @@ impl CodeGen for FunctionData {
             let reg = env.get_register(self.params()[i]).unwrap();
             if  i < 8 {
                 if reg != A0 + i as Register {
-                    env.output.write_all(format!("  mv {}, a{}\n", to_string(reg), i).as_bytes()).unwrap();
+                    insts.push(Inst::Mv(Reg::from_string(&to_string(reg)), Reg::from_string(&format!("a{}", i))));
                 }
             } else {
                 let offset = 4 * (i - 8);
-                env.output.write_all(format!("  lw {}, {}(sp)\n", to_string(reg), offset).as_bytes()).unwrap();
+                insts.push(Inst::Lw(Reg::from_string(&to_string(reg)), Reg::from_string("sp"), offset as i32));
             }
         }
-        env.output.write_all(get_addi("sp", "sp", -(stack_size as i32), "t5").as_bytes()).unwrap();
+        // env.output.write_all(get_addi("sp", "sp", -(stack_size as i32), "t5").as_bytes()).unwrap();
+        insts.extend(get_addi("sp", "sp", -(stack_size as i32), "t5"));
         env.cur_pos = (8 + min(12, env.max_reg_num) * 4) as usize; // 8 for ra and sp, 4 for each register
+        func.add_section(label.as_str(), insts);
         
         for (bb, _) in self.layout().bbs().iter() {
-            bb.code_gen(env);
+            let insts = bb.code_gen(env);
+            let bb_name = &self.dfg().bb(*bb).name().as_ref().unwrap()[1..];
+            func.add_section(bb_name, insts);
         }
+        func
     }
 }
 
 impl CodeGen for BasicBlock {
-    fn code_gen(&self, env: &mut Environment) {
-        {
-            let bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(*self);
-            env.output.write_all(format!("{}: # ", &bb_data.name().as_ref().unwrap()[1..]).as_bytes()).unwrap();
-            for param in bb_data.params() {
-                let reg = env.get_register(*param).unwrap();
-                env.output.write_all(format!("{} ", to_string(reg)).as_bytes()).unwrap();
-            }
-            env.output.write_all("\n".as_bytes()).unwrap();
-        }
+    type Output = Vec<Inst>;
+    fn code_gen(&self, env: &mut Environment) -> Self::Output {
+        // {
+        //     let bb_data = env.program.func(env.cur_func.unwrap()).dfg().bb(*self);
+        //     env.output.write_all(format!("{}: # ", &bb_data.name().as_ref().unwrap()[1..]).as_bytes()).unwrap();
+        //     for param in bb_data.params() {
+        //         let reg = env.get_register(*param).unwrap();
+        //         env.output.write_all(format!("{} ", to_string(reg)).as_bytes()).unwrap();
+        //     }
+        //     env.output.write_all("\n".as_bytes()).unwrap();
+        // }
         let bb_node = env.program.func(env.cur_func.unwrap()).layout().bbs().node(self).unwrap();
+        let mut insts = Vec::new();
         for (inst, _) in bb_node.insts() {
-            inst.code_gen(env);
+            insts.extend(inst.code_gen(env));
         }
+        insts
     }
 }
 #[derive(Copy, Clone)]
@@ -180,7 +190,7 @@ enum RegOrInt {
     Reg(Register),
     Int(i32),
 }
-fn process_jump(args: &[Value], block_params: &[Value], env: &mut Environment, temp_reg: &str) {
+fn process_jump(args: &[Value], block_params: &[Value], env: &mut Environment, temp_reg: &str) -> Vec<Inst> {
     let mut args : Vec<RegOrInt> = args.iter().map(|v| {
         let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*v);
         match value_data.kind() {
@@ -191,70 +201,62 @@ fn process_jump(args: &[Value], block_params: &[Value], env: &mut Environment, t
             }
         }
     }).collect::<Vec<_>>();
-    // let mut old_args: HashMap<Register, Vec<usize>> = HashMap::new();
-    // for (i, arg) in args.iter().enumerate() {
-    //     if let RegOrInt::Reg(reg) = arg {
-    //         old_args.entry(*reg).or_default().push(i);
-    //     }
-    // }
-    
+    let mut insts = Vec::new();
     for i in 0..block_params.len() {
         let src = args[i];
-        let dst = env.get_reg_or_integer(block_params[i]).unwrap();
+        let dst = env.get_reg_or_integer(block_params[i], &mut insts).unwrap();
         let src = match src {
             RegOrInt::Reg(reg) => reg,
             RegOrInt::Int(num) => {
-                env.output.write_all(format!("  li {}, {}\n", to_string(dst), num).as_bytes()).unwrap();
+                insts.push(Inst::Li(Reg::from_string(&to_string(dst)), num));
                 continue
             }
         };
         if src == dst {
             continue;
         }
-        // if old_args.contains_key(&dst) {
-        //     let idxs = &old_args[&dst];
-        //     let arg = match args[idxs[0]] {
-        //         RegOrInt::Reg(reg) => reg,
-        //         _ => unreachable!()
-        //     };
-        //     env.output.write_all(format!("  mv {}, {}\n", temp_reg, to_string(arg)).as_bytes()).unwrap();
-        //     env.output.write_all(format!("  mv {}, {}\n", to_string(dst), to_string(src)).as_bytes()).unwrap();
-        //     env.output.write_all(format!("  mv {}, {}\n", to_string(src), temp_reg).as_bytes()).unwrap();
-        //     for &idx in idxs {
-        //         args[idx] = RegOrInt::Reg(src);
-        //     }
-        //     old_args.remove(&arg);
-        // } else {
-        env.output.write_all(format!("  mv {}, {}\n", to_string(dst), to_string(src)).as_bytes()).unwrap();
-        //     old_args.remove(&src);
-        // }
+        insts.push(Inst::Mv(Reg::from_string(&to_string(dst)), Reg::from_string(&to_string(src))));
     }
+    insts
 }
 impl CodeGen for Value{
-    fn code_gen(&self, env: &mut Environment) {
+    type Output = Vec<Inst>;
+    fn code_gen(&self, env: &mut Environment) -> Self::Output {
         let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*self);
-        let str = match value_data.kind() {
+        let mut insts = Vec::new();
+        match value_data.kind() {
             ValueKind::Binary(binary) => {
-                let rs1 = to_string(env.get_reg_with_load(binary.lhs(), T5).unwrap());
-                let rs2 = to_string(env.get_reg_with_load(binary.rhs(), T6).unwrap());
+                let rs1 = to_string(env.get_reg_with_load(binary.lhs(), T5, &mut insts).unwrap());
+                let rs2 = to_string(env.get_reg_with_load(binary.rhs(), T6, &mut insts).unwrap());
                 let rd = to_string(env.get_register(*self).unwrap());
-
                 match binary.op() {
-                    BinaryOp::Add => format!("  add {}, {}, {}\n", rd, rs1, rs2),
-                    BinaryOp::Sub => format!("  sub {}, {}, {}\n", rd, rs1, rs2),
-                    BinaryOp::Mul => format!("  mul {}, {}, {}\n", rd, rs1, rs2),
-                    BinaryOp::Div => format!("  div {}, {}, {}\n", rd, rs1, rs2),
-                    BinaryOp::Mod => format!("  rem {}, {}, {}\n", rd, rs1, rs2),
-                    BinaryOp::Gt => format!("  sgt {}, {}, {}\n", rd, rs1, rs2),
-                    BinaryOp::Lt => format!("  slt {}, {}, {}\n", rd, rs1, rs2),
-                    BinaryOp::Eq => format!("  sub {}, {}, {}\n  seqz {}, {}\n", rd, rs1, rs2, rd, rd),
-                    BinaryOp::NotEq => format!("  sub {}, {}, {}\n  snez {}, {}\n", rd, rs1, rs2, rd, rd),
-                    BinaryOp::Ge => format!("  slt {}, {}, {}\n  xori {}, {}, {}\n", rd, rs1, rs2, rd, rd, 1),
-                    BinaryOp::Le => format!("  sgt {}, {}, {}\n  xori {}, {}, {}\n", rd, rs1, rs2, rd, rd, 1),
+                    BinaryOp::Add => insts.push(Inst::Binary(RiscVBinaryOp::Add, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2))),
+                    BinaryOp::Sub => insts.push(Inst::Binary(RiscVBinaryOp::Sub, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2))),
+                    BinaryOp::Mul => insts.push(Inst::Binary(RiscVBinaryOp::Mul, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2))),
+                    BinaryOp::Div => insts.push(Inst::Binary(RiscVBinaryOp::Div, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2))),
+                    BinaryOp::Mod => insts.push(Inst::Binary(RiscVBinaryOp::Rem, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2))),
+                    BinaryOp::Gt => insts.push(Inst::Binary(RiscVBinaryOp::Sgt, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2))),
+                    BinaryOp::Lt => insts.push(Inst::Binary(RiscVBinaryOp::Slt, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2))),
+                    BinaryOp::Eq => {
+                        insts.push(Inst::Binary(RiscVBinaryOp::Sub, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2)));
+                        insts.push(Inst::Seqz(Reg::from_string(&rd), Reg::from_string(&rd)));
+                    }
+                    BinaryOp::NotEq => {
+                        insts.push(Inst::Binary(RiscVBinaryOp::Sub, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2)));
+                        insts.push(Inst::Snez(Reg::from_string(&rd), Reg::from_string(&rd)));
+                    }
+                    BinaryOp::Ge => {
+                        insts.push(Inst::Binary(RiscVBinaryOp::Slt, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2)));
+                        insts.push(Inst::BinaryImm(RiscVBinaryOp::Xor, Reg::from_string(&rd), Reg::from_string(&rd), 1));
+                    }
+                    BinaryOp::Le => {
+                        insts.push(Inst::Binary(RiscVBinaryOp::Sgt, Reg::from_string(&rd), Reg::from_string(&rs1), Reg::from_string(&rs2)));
+                        insts.push(Inst::BinaryImm(RiscVBinaryOp::Xor, Reg::from_string(&rd), Reg::from_string(&rd), 1));
+                    }
                     _ => {
                         panic!("Unsupported binary operation: {:?}", binary.op());
                     }
-                }
+                };
             },
             ValueKind::Jump(jump) => {
                 let target = jump.target();
@@ -262,8 +264,8 @@ impl CodeGen for Value{
                 let target_name = &target_bb.name().as_ref().unwrap()[1..];
                 let args = jump.args();
                 let block_params = target_bb.params();
-                process_jump(args, block_params, env, "t5");
-                format!("  j {}\n", target_name)
+                insts.extend(process_jump(args, block_params, env, "t5"));
+                insts.push(Inst::Jump(target_name.to_string()));
             }
             ValueKind::Alloc(_) => {
                 let size = match value_data.ty().kind() {
@@ -274,12 +276,11 @@ impl CodeGen for Value{
                 };
                 env.cur_pos += size;
                 env.insert_stack_variable(*self, env.stack_size - env.cur_pos);
-                String::new()
             },
             ValueKind::Store(store) => {
                 let val = env.program.func(env.cur_func.unwrap()).dfg().value(store.value());
                 if let ValueKind::Aggregate(agg) = val.kind() {
-                    let (base, off) = env.get_pos_(store.dest(), "t5").unwrap();
+                    let (base, off) = env.get_pos_(store.dest(), "t5", &mut insts).unwrap();
                     for (i, value) in agg.elems().iter().enumerate() {
                         let value_data = env.program.func(env.cur_func.unwrap()).dfg().value(*value);
                         let num = match value_data.kind() {
@@ -287,37 +288,39 @@ impl CodeGen for Value{
                             _ => unreachable!()
                         };
                         let offset = off + i * 4;
-                        let temp = env.get_offset(base.as_str(), offset as i32, "t6");
-                        env.output.write_all(format!("  li t6, {}\n  sw t6, {}\n", num, temp).as_bytes()).unwrap();
+                        let (temp, off) = env.get_offset(base.as_str(), offset as i32, "t6", &mut insts);
+                        insts.push(Inst::Li(Reg::from_string("t6"), num));
+                        insts.push(Inst::Sw(Reg::from_string("t6"), Reg::from_string(&temp), off as i32));
                     }
-                    String::new()
                 } else {
-                    let src = to_string(env.get_reg_with_load(store.value(), T5).unwrap());
-                    let dst = env.get_pos(store.dest(), "t6").unwrap();
-                    format!("  sw {}, {}\n", src, dst)
+                    let src = to_string(env.get_reg_with_load(store.value(), T5, &mut insts).unwrap());
+                    let (dst, off) = env.get_pos(store.dest(), "t6", &mut insts).unwrap();
+                    insts.push(Inst::Sw(Reg::from_string(&src), Reg::from_string(&dst), off as i32));
                 }
             }
             ValueKind::Load(load) => {
                 let rd = to_string(env.get_register(*self).unwrap());
-                let src = env.get_pos(load.src(), "t5").unwrap();
-                format!("  lw {}, {}\n", rd, src)
+                let (src, off) = env.get_pos(load.src(), "t5", &mut insts).unwrap();
+                insts.push(Inst::Lw(Reg::from_string(&rd), Reg::from_string(&src), off as i32));
             },
             ValueKind::GetElemPtr(ptr) => {
                 let rd = to_string(env.get_register(*self).unwrap());
-                let (base_reg, off) = env.get_symbol_pos(ptr.src(), "t5").unwrap();
+                let (base_reg, off) = env.get_symbol_pos(ptr.src(), "t5", &mut insts).unwrap();
                 // assert_eq!(value_data.ty().size(), 4);
                 let index = ptr.index();
                 let index_data = env.program.func(env.cur_func.unwrap()).dfg().value(index);
                 match index_data.kind() {
                     ValueKind::Integer(num) => {
                         let offset = num.value() as usize * 4 + off;
-                        get_addi(rd.as_str(), base_reg.as_str(), offset as i32, "t6")
+                        // get_addi(rd.as_str(), base_reg.as_str(), offset as i32, "t6")
+                        insts.extend(get_addi(rd.as_str(), base_reg.as_str(), offset as i32, "t6"));
                     }
                     _ => {
-                        let offset = to_string(env.get_reg_with_load(index, T6).unwrap());
-                        let temp = format!("  li t6, 2\n  sll t6, {}, t6\n  add {}, {}, t6\n", offset, rd, base_reg);
-                        let addi = get_addi(rd.as_str(), rd.as_str(), off as i32, "t5");
-                        temp + addi.as_str()
+                        let offset = to_string(env.get_reg_with_load(index, T6, &mut insts).unwrap());
+                        insts.push(Inst::Li(Reg::from_string("t6"), 2));
+                        insts.push(Inst::Binary(RiscVBinaryOp::Sll, Reg::from_string("t6"), Reg::from_string(&offset), Reg::from_string("t6")));
+                        insts.push(Inst::Binary(RiscVBinaryOp::Add, Reg::from_string(&rd), Reg::from_string(&base_reg), Reg::from_string("t6")));
+                        insts.extend(get_addi(rd.as_str(), rd.as_str(), off as i32, "t5"));
                     }
                 }
             }
@@ -330,18 +333,20 @@ impl CodeGen for Value{
                 match index_data.kind() {
                     ValueKind::Integer(num) => {
                         let offset = num.value() as usize * 4;
-                        get_addi(rd.as_str(), base_reg.as_str(), offset as i32, "t6")
+                        insts.extend(get_addi(rd.as_str(), base_reg.as_str(), offset as i32, "t6"));
                     }
                     _ => {
-                        let offset = to_string(env.get_reg_with_load(index, T6).unwrap());
-                        format!("  li t6, 2\n  sll t6, {}, t6\n  add {}, {}, t6\n", offset, rd, base_reg)
+                        let offset = to_string(env.get_reg_with_load(index, T6, &mut insts).unwrap());
+                        insts.push(Inst::Li(Reg::from_string("t6"), 2));
+                        insts.push(Inst::Binary(RiscVBinaryOp::Sll, Reg::from_string("t6"), Reg::from_string(&offset), Reg::from_string("t6")));
+                        insts.push(Inst::Binary(RiscVBinaryOp::Add, Reg::from_string(&rd), Reg::from_string(&base_reg), Reg::from_string("t6")));
                     }
                 }
             },
             ValueKind::Branch(branch) => {
-                let cond = to_string(env.get_reg_with_load(branch.cond(), T5).unwrap());
+                let cond = to_string(env.get_reg_with_load(branch.cond(), T5, &mut insts).unwrap());
                 if cond != "t5" {
-                    env.output.write_all(format!("  mv t5, {}\n", cond).as_bytes()).unwrap();
+                    insts.push(Inst::Mv(Reg::from_string("t5"), Reg::from_string(&cond)));
                 }
                 let true_bb = branch.true_bb();
                 let false_bb = branch.false_bb();
@@ -353,27 +358,28 @@ impl CodeGen for Value{
                 let false_bb_params = false_bb_data.params();
                 static BRANCH_CNT: AtomicUsize = AtomicUsize::new(0);
                 let cnt = BRANCH_CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                process_jump(branch.false_args(), false_bb_params, env, "t6");
-                env.output.write_all(format!("  bnez t5, skip_{}\n  j {}\nskip_{}:\n", cnt, false_name, cnt).as_bytes()).unwrap();
-                process_jump(branch.true_args(), true_bb_params, env, "t6");
-                format!("  j {}\n", true_name)
+                insts.extend(process_jump(branch.false_args(), false_bb_params, env, "t6"));
+                insts.push(Inst::Bnez(Reg::from_string("t5"), format!("skip_{}", cnt)));
+                insts.push(Inst::Jump(false_name.to_string()));
+                insts.push(Inst::Label(format!("skip_{}", cnt)));
+                insts.extend(process_jump(branch.true_args(), true_bb_params, env, "t6"));
+                insts.push(Inst::Jump(true_name.to_string()));
             }
             ValueKind::Return(ret) => {
                 if let Some(value) = ret.value() {
-                    let rs = to_string(env.get_reg_with_load(value, T5).unwrap());
-                    env.output.write_all(format!("  mv a0, {}\n", rs).as_bytes()).unwrap();
+                    let rs = to_string(env.get_reg_with_load(value, T5, &mut insts).unwrap());
+                    insts.push(Inst::Mv(Reg::from_string("a0"), Reg::from_string(&rs)));
                 }
                 // restore sp and ra
-                env.output.write_all(get_addi("sp", "sp", env.stack_size as i32, "t6").as_bytes()).unwrap();
+                insts.extend(get_addi("sp", "sp", env.stack_size as i32, "t6"));
 
                 for i in 0..min(12, env.max_reg_num) {
                     let reg = to_string(i);
-                    env.output.write_all(format!("  lw {}, -{}(sp)\n", reg, 12 + i * 4).as_bytes()).unwrap();
+                    insts.push(Inst::Lw(Reg::from_string(&reg), Reg::from_string("sp"), -((12 + i * 4) as i32)));
                 }
-                env.output.write_all("  lw ra, -4(sp)\n".as_bytes()).unwrap();
-                env.output.write_all("  lw sp, -8(sp)\n".as_bytes()).unwrap();
-                env.output.write_all("  ret\n".as_bytes()).unwrap();
-                return;
+                insts.push(Inst::Lw(Reg::from_string("ra"), Reg::from_string("sp"), -4));
+                insts.push(Inst::Lw(Reg::from_string("sp"), Reg::from_string("sp"), -8));
+                insts.push(Inst::Ret);
             },
             ValueKind::Call(call) => {
                 if env.max_reg_num > 12 {
@@ -382,8 +388,8 @@ impl CodeGen for Value{
                         // let offset = env.stack_size - env.cur_pos - 4 * (i - 12);
                         env.cur_pos += 4;
                         let offset = env.stack_size - env.cur_pos;
-                        let temp = env.get_offset("sp", offset as i32, "t5");
-                        env.output.write_all(format!("  sw {}, {}\n", reg, temp).as_bytes()).unwrap();
+                        let (temp, off) = env.get_offset("sp", offset as i32, "t5", &mut insts);
+                        insts.push(Inst::Sw(Reg::from_string(&reg), Reg::from_string(&temp), off as i32));
                     }
                 }
 
@@ -392,25 +398,25 @@ impl CodeGen for Value{
                 for (i, arg) in call.args().iter().enumerate().rev() {
                     if i < 8 {
                         let temp = A0 + i as Register;
-                        let reg = to_string(env.get_reg_with_load(*arg, temp).unwrap());
+                        let reg = to_string(env.get_reg_with_load(*arg, temp, &mut insts).unwrap());
                         if reg != to_string(temp) {
-                            env.output.write_all(format!("  mv {}, {}\n", to_string(temp), reg).as_bytes()).unwrap();
+                            insts.push(Inst::Mv(Reg::from_string(&to_string(temp)), Reg::from_string(&reg)));
                         }
                     } else {
-                        let reg = to_string(env.get_reg_with_load(*arg, T5).unwrap());
+                        let reg = to_string(env.get_reg_with_load(*arg, T5, &mut insts).unwrap());
                         let offset = 4 * (i - 8);
-                        let temp = env.get_offset("sp", offset as i32, "t6");
-                        env.output.write_all(format!("  sw {}, {}\n", reg, temp).as_bytes()).unwrap();
+                        let (temp, off) = env.get_offset("sp", offset as i32, "t6", &mut insts);
+                        insts.push(Inst::Sw(Reg::from_string(&reg), Reg::from_string(&temp), off as i32));
                     }
                 }
-                env.output.write_all(format!("  call {}\n", func_name).as_bytes()).unwrap();
+                insts.push(Inst::Call(func_name.to_string()));
 
                 let return_type = callee_data.ty();
                 match return_type.kind() {
                     TypeKind::Function(_, ret) => {
                         if ret.is_i32() {
                             let rd = to_string(env.get_register(*self).unwrap());
-                            env.output.write_all(format!("  mv {}, a0\n", rd).as_bytes()).unwrap();
+                            insts.push(Inst::Mv(Reg::from_string(&rd), Reg::from_string("a0")));
                         }
                     }
                     _ => {unreachable!()}
@@ -421,16 +427,15 @@ impl CodeGen for Value{
                         let reg = to_string(i);
                         let offset = env.stack_size - env.cur_pos;
                         env.cur_pos -= 4;
-                        let temp = env.get_offset("sp", offset as i32, "t5");
-                        env.output.write_all(format!("  lw {}, {}\n", reg, temp).as_bytes()).unwrap();
+                        let (temp, off) = env.get_offset("sp", offset as i32, "t5", &mut insts);
+                        insts.push(Inst::Lw(Reg::from_string(&reg), Reg::from_string(&temp), off as i32));
                     }
                 }
-                String::new()
             }
             _ => {
                 panic!("Unsupported value kind");
             }
         };
-        env.output.write_all(str.as_bytes()).unwrap();
+        insts
     }
 }

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use koopa::ir::{Function, Program, Value, ValueKind};
+use crate::backend::asm::{Inst, Reg, RiscVBinaryOp};
 use crate::backend::register::{get_register_map, to_string, Register};
 
 pub struct Environment<'a> {
@@ -17,10 +18,7 @@ pub struct Environment<'a> {
     pub max_reg_num: u32,
 
 }
-// pub enum PosType {
-//     SP(usize),
-//     Reg
-// }
+
 impl Environment<'_> {
     pub fn new<'a>(program: &'a Program, output: &'a mut File) -> Environment<'a> {
         Environment {
@@ -52,29 +50,20 @@ impl Environment<'_> {
     pub fn get_register(&self, value: Value) -> Option<Register> {
         self.register_map.get(&value).cloned()
     }
-    pub fn get_offset(&mut self, base: &str, offset: i32, temp: &str) -> String {
+    pub fn get_offset(&mut self, base: &str, offset: i32, temp: &str, insts: &mut Vec<Inst>) -> (String, usize) {
         if offset > 2047 || offset < -2048 {
-            self.output.write_all(format!("  li {}, {}\n", temp, offset).as_bytes()).unwrap();
-            self.output.write_all(format!("  add {}, {}, {}\n", temp, base, temp).as_bytes()).unwrap();
-            format!("0({})", temp)
+            insts.push(Inst::Li(Reg::from_string(temp), offset));
+            insts.push(Inst::Binary(RiscVBinaryOp::Add, Reg::from_string(temp), Reg::from_string(base), Reg::from_string(temp)));
+            (temp.to_string(), 0)
         } else {
-            format!("{}({})", offset, base)
+            (base.to_string(), offset as usize)
         }
     }
-    pub fn get_offset_inplace(&mut self, base: &str, offset: i32, temp: &str) -> String {
-        if offset > 2047 || offset < -2048 {
-            self.output.write_all(format!("  li {}, {}\n", temp, offset).as_bytes()).unwrap();
-            self.output.write_all(format!("  add {}, {}, {}\n", base, base, temp).as_bytes()).unwrap();
-            format!("0({})", base)
-        } else {
-            format!("{}({})", offset, base)
-        }
-    }
-    pub fn get_reg_or_integer(&mut self, value: Value) -> Option<Register> {
+    pub fn get_reg_or_integer(&mut self, value: Value, insts: &mut Vec<Inst>) -> Option<Register> {
         let value_data = self.program.func(self.cur_func.unwrap()).dfg().value(value);
         if let ValueKind::Integer(integer) = value_data.kind() {
             let reg = self.register_map.get(&value).unwrap();
-            self.output.write_all(format!("  li {}, {}\n", to_string(*reg), integer.value()).as_bytes()).unwrap();
+            insts.push(Inst::Li(Reg::from_string(&to_string(*reg)), integer.value()));
             return Some(*reg);
         }
         if let Some(reg) = self.register_map.get(&value) {
@@ -82,29 +71,29 @@ impl Environment<'_> {
         }
         None
     }
-    pub fn get_reg_with_load(&mut self, value: Value, temp_reg: Register) -> Option<Register> {
-        if let Some(reg) = self.get_reg_or_integer(value) {
+    pub fn get_reg_with_load(&mut self, value: Value, temp_reg: Register, insts: &mut Vec<Inst>) -> Option<Register> {
+        if let Some(reg) = self.get_reg_or_integer(value, insts) {
             return Some(reg);
         }
         if let Some(name) = self.global_var.get(&value) {
             let str = to_string(temp_reg);
-            self.output.write_all(format!("  la {}, {}\n", str, name).as_bytes()).unwrap();
-            self.output.write_all(format!("  lw {}, 0({})\n", str, str).as_bytes()).unwrap();
+            insts.push(Inst::La(Reg::from_string(&str), name.to_string()));
+            insts.push(Inst::Lw(Reg::from_string(&str), Reg::from_string(&str), 0));
             return Some(temp_reg);
         }
         None
     }
-    pub fn get_symbol_pos(&mut self, value: Value, temp_reg: &str) -> Option<(String, usize)> {
+    pub fn get_symbol_pos(&mut self, value: Value, temp_reg: &str, insts: &mut Vec<Inst>) -> Option<(String, usize)> {
         if let Some(pos) = self.var_pos.get(&value) {
             return Some(("sp".to_string(), *pos));
         }
         if let Some(name) = self.global_var.get(&value) {
-            self.output.write_all(format!("  la {}, {}\n", temp_reg, name).as_bytes()).unwrap();
+            insts.push(Inst::La(Reg::from_string(&temp_reg), name.to_string()));
             return Some((temp_reg.to_string(), 0));
         }
         None
     }
-    pub fn get_pos_(&mut self, value: Value, temp_reg: &str) -> Option<(String, usize)> {
+    pub fn get_pos_(&mut self, value: Value, temp_reg: &str, insts: &mut Vec<Inst>) -> Option<(String, usize)> {
         if let Some(reg) = self.register_map.get(&value) {
             return Some((to_string(*reg), 0));
         }
@@ -112,23 +101,22 @@ impl Environment<'_> {
             return Some(("sp".to_string(), *pos));
         }
         if let Some(name) = self.global_var.get(&value) {
-            self.output.write_all(format!("la {}, {}\n", temp_reg, name).as_bytes()).unwrap();
+            insts.push(Inst::La(Reg::from_string(&temp_reg), name.to_string()));
             return Some((temp_reg.to_string(), 0));
         }
         None
     }
 
-    pub fn get_pos(&mut self, value: Value, temp_reg: &str) -> Option<String> {
+    pub fn get_pos(&mut self, value: Value, temp_reg: &str, insts: &mut Vec<Inst>) -> Option<(String, usize)> {
         if let Some(reg) = self.register_map.get(&value) {
-            return Some(format!("0({})", to_string(*reg)));
+            return Some((to_string(*reg), 0));
         }
         if let Some(pos) = self.var_pos.get(&value) {
-            let temp = self.get_offset("sp", *pos as i32, temp_reg);
-            return Some(format!("{}", temp));
+            return Some(self.get_offset("sp", *pos as i32, temp_reg, insts))
         }
         if let Some(name) = self.global_var.get(&value) {
-            self.output.write_all(format!("la {}, {}\n", temp_reg, name).as_bytes()).unwrap();
-            return Some(format!("0({})", temp_reg));
+            insts.push(Inst::La(Reg::from_string(&temp_reg), name.to_string()));
+            return Some((temp_reg.to_string(), 0));
         }
         None
     }
